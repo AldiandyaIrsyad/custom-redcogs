@@ -1,0 +1,10 @@
+{
+  "author": ["Aldiandya Irsyad"],
+  "install_msg": "Thanks for installing the Schedule cog! This cog requires the `dateparser` library, which you should have already installed.",
+  "name": "Schedule",
+  "short": "Schedules a game within a forum post.",
+  "description": "A command to create a simple LFG schedule message in a Discord forum post, automatically using the post's title as the game name.",
+  "tags": ["schedule", "forum", "lfg", "utility"],
+  "requirements": ["dateparser"],
+  "end_user_data_statement": "This cog does not store any user data."
+}
