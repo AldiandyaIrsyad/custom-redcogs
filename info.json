@@ -2,7 +2,6 @@
   "author": "Aldiandya Irsyad",
   "name": "Custom Cogs for ING",
   "short": "A repository of cogs being used in my Red Discord Bot instance.",
-  "version": "1.0.0",
   "description": "Custom cogs for my Red Discord Bot instance.",
   "install_msg": "Thanks for adding my repo!"
 }
