@@ -155,64 +155,44 @@ class Schedule(commands.Cog):
 
 
     async def _handle_reaction(self, payload: discord.RawReactionActionEvent, action: str):
-        print("--- [DEBUG] Reaction handler started. ---")
-
         if payload.guild_id is None or str(payload.emoji) != "✅":
             return
 
         guild = self.bot.get_guild(payload.guild_id)
         if not guild:
-            print("[DEBUG] EXIT: Could not find guild.")
             return
-
 
         try:
+            # Using fetch_channel to reliably get any channel, including threads.
+            channel = await self.bot.fetch_channel(payload.channel_id)
             user = await guild.fetch_member(payload.user_id)
         except discord.NotFound:
-            print(f"[DEBUG] EXIT: Could not fetch member with ID {payload.user_id}.")
+            # This can happen if the user or channel is gone.
             return
-        # ----------------------------
-
+        
         if not user or user.bot:
-            print("[DEBUG] EXIT: User is a bot or could not be found.")
             return
-
-        print(f"[DEBUG] Found user: {user.name}")
 
         async with self.config.guild(guild).scheduled_events() as events:
             event_data = events.get(str(payload.message_id))
             if not event_data:
-                print("[DEBUG] EXIT: This message is not a tracked event.")
-                return
-
-            print("[DEBUG] Event data found in config.")
-
-            channel = guild.get_channel(payload.channel_id)
-            if not channel:
-                print("[DEBUG] EXIT: Could not find channel.")
                 return
             
             try:
                 message = await channel.fetch_message(payload.message_id)
             except discord.NotFound:
-                print("[DEBUG] EXIT: Could not fetch original message.")
                 del events[str(payload.message_id)]
                 return
 
-            print("[DEBUG] Original message fetched.")
             attendees = event_data["attendees"]
             limit = event_data["player_limit"]
 
             if action == "add":
-                print("[DEBUG] Action is 'add'.")
                 if user.id not in attendees and len(attendees) < limit:
                     attendees.append(user.id)
-                    print(f"[DEBUG] User {user.name} added to attendees.")
                 elif user.id in attendees:
-                    print(f"[DEBUG] EXIT: User {user.name} is already in the list.")
-                    return
+                    return # User already in list
                 else: # Lobby is full
-                    print(f"[DEBUG] EXIT: Lobby is full.")
                     try:
                         await message.remove_reaction(payload.emoji, user)
                     except discord.Forbidden:
@@ -220,29 +200,21 @@ class Schedule(commands.Cog):
                     return
             
             elif action == "remove":
-                print("[DEBUG] Action is 'remove'.")
                 if user.id in attendees:
                     if user.id == event_data["organizer_id"]:
-                        print("[DEBUG] EXIT: Organizer cannot leave.")
                         try:
                             await message.add_reaction(payload.emoji)
                         except discord.Forbidden:
                             pass
                         return
                     attendees.remove(user.id)
-                    print(f"[DEBUG] User {user.name} removed from attendees.")
                 else:
-                    print(f"[DEBUG] EXIT: User {user.name} was not in the list to be removed.")
-                    return
+                    return # User was not in list
 
             event_data["attendees"] = attendees
             events[str(payload.message_id)] = event_data
             
-            print("[DEBUG] FINAL STEP: Calling update_embed.")
             await self._update_embed(message, event_data)
-            print("--- [DEBUG] Handler finished. ---")
-
-
 
 
     async def _update_embed(self, message: discord.Message, event_data: dict):
