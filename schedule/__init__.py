@@ -209,6 +209,12 @@ class Schedule(commands.Cog):
                     attendees.remove(user.id)
                 else:
                     return  # User was not in list
+                
+            event_data["attendees"] = attendees
+            events[str(payload.message_id)] = event_data
+            await self._update_embed(message, event_data)
+
+            
 
 
 

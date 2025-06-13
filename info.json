@@ -1,5 +1,5 @@
 {
-  "author": "Aldiandya Irsyad",
+  "author": ["Aldiandya Irsyad"],
   "name": "Custom Cogs for ING",
   "short": "A repository of cogs being used in my Red Discord Bot instance.",
   "description": "Custom cogs for my Red Discord Bot instance.",
