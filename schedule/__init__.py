@@ -153,6 +153,7 @@ class Schedule(commands.Cog):
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
         await self._handle_reaction(payload, "remove")
 
+
     async def _handle_reaction(self, payload: discord.RawReactionActionEvent, action: str):
         if payload.guild_id is None or str(payload.emoji) != "✅":
             return
@@ -177,7 +178,7 @@ class Schedule(commands.Cog):
             try:
                 message = await channel.fetch_message(payload.message_id)
             except discord.NotFound:
-                del events[str(payload.message_id)] # Cleanup if message was deleted
+                del events[str(payload.message_id)]  # Cleanup if message was deleted
                 return
 
             attendees = event_data["attendees"]
@@ -190,26 +191,28 @@ class Schedule(commands.Cog):
                     try:
                         await message.remove_reaction(payload.emoji, user)
                     except discord.Forbidden:
-                        pass 
+                        pass
                     return
                 else:
-                    return 
+                    return  # User already in list or other condition
             
             elif action == "remove":
                 if user.id in attendees:
+                    # The organizer cannot leave by un-reacting
                     if user.id == event_data["organizer_id"]:
-                         try:
+                        try:
+                            # Re-add their reaction to signify they can't leave
                             await message.add_reaction(payload.emoji)
-                         except discord.Forbidden:
+                        except discord.Forbidden:
                             pass
-                         return
+                        return
                     attendees.remove(user.id)
                 else:
-                    return 
+                    return  # User was not in list
 
-            event_data["attendees"] = attendees
-            await self._update_embed(message, event_data)
-    
+
+
+
     async def _update_embed(self, message: discord.Message, event_data: dict):
         unix_timestamp = event_data['start_timestamp']
         
