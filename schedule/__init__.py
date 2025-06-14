@@ -65,9 +65,11 @@ class Schedule(commands.Cog):
     @commands.guild_only()
     @app_commands.describe(
         player_amount="The maximum number of players for the lobby.",
-        time_input="When the game starts (e.g., 'in 2 hours', 'at 10pm', 'thursday at 10pm')."
+        time_input="When the game starts (e.g., 'in 2 hours', 'at 10pm', 'thursday at 10pm').",
+        title="Optional: A custom title for the game session.",
+        description="Optional: A description for the game session."
     )
-    async def schedule(self, ctx: commands.Context, player_amount: int, *, time_input: str):
+    async def schedule(self, ctx: commands.Context, player_amount: int, time_input: str, title: str = None, description: str = None):
         """
         Schedules a game session within a designated forum post.
         """
@@ -95,13 +97,15 @@ class Schedule(commands.Cog):
             return await ctx.send(f"Sorry, I couldn't understand the time: `{time_input}`.", ephemeral=True)
         
         unix_timestamp = int(parsed_time.timestamp())
-        game_title = ctx.channel.name
+        game_title = title if title else ctx.channel.name # Use provided title or channel name
         
         embed = discord.Embed(
             title=f"Game Session: {game_title}",
             description=f"Starts <t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)",
             color=discord.Color.blue()
         )
+        if description: # Add description field if provided
+            embed.add_field(name="Description", value=description, inline=False)
         embed.add_field(name="Lobby", value=f"1 / {player_amount}", inline=True)
         embed.add_field(name="Organizer", value=ctx.author.mention, inline=True)
         embed.add_field(name="Players", value=ctx.author.mention, inline=False)
@@ -116,7 +120,8 @@ class Schedule(commands.Cog):
         event_data = {
             "organizer_id": ctx.author.id,
             "player_limit": player_amount,
-            "game_title": game_title,
+            "game_title": game_title, # Store the potentially custom title
+            "description": description, # Store the description
             "start_timestamp": unix_timestamp,
             "channel_id": ctx.channel.id,
             "attendees": [ctx.author.id],
@@ -212,13 +217,15 @@ class Schedule(commands.Cog):
                     start_time_ts = event_data["start_timestamp"]
                     
                     # Reminder can be sent if current time is within 30 minutes before event start
-                    # and the event has not started yet.
-                    if (start_time_ts - 1800) < now_ts < start_time_ts:
+                    # #~and the event has not started yet.
+                    # if (start_time_ts - 1800) < now_ts < start_time_ts:
+                    if (start_time_ts - 1800) < now_ts:
+
                         attendee_pings = " ".join([f"<@{uid}>" for uid in event_data["attendees"]])
-                        game_title = event_data['game_title']
+                        game_title_for_reminder = event_data.get('game_title', "The Game") # Use stored game_title
                         
                         if hasattr(channel, 'send'): # Check if channel can send messages
-                             await channel.send(f"**Reminder for {game_title}!**\\nGame is starting in less than 30 minutes!\\n{attendee_pings}")
+                             await channel.send(f"**Reminder for {game_title_for_reminder}!**\\nGame is starting in less than 30 minutes!\\n{attendee_pings}")
                         
                         # Remove the ❗ reaction after sending reminder to prevent spam / indicate action taken
                         try:
@@ -244,12 +251,16 @@ class Schedule(commands.Cog):
 
     async def _update_embed(self, message: discord.Message, event_data: dict):
         unix_timestamp = event_data['start_timestamp']
+        game_title_for_embed = event_data.get('game_title', "Unknown Game") # Use stored game_title
+        description_for_embed = event_data.get('description') # Get stored description
         
         new_embed = discord.Embed(
-            title=f"Game Session: {event_data['game_title']}",
+            title=f"Game Session: {game_title_for_embed}",
             description=f"Starts <t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)",
             color=discord.Color.blue()
         )
+        if description_for_embed: # Add description field if it exists
+            new_embed.add_field(name="Description", value=description_for_embed, inline=False)
         new_embed.add_field(name="Lobby", value=f"{len(event_data['attendees'])} / {event_data['player_limit']}", inline=True)
         organizer = message.guild.get_member(event_data['organizer_id'])
         new_embed.add_field(name="Organizer", value=organizer.mention if organizer else "Unknown", inline=True)
