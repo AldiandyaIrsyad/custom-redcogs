@@ -105,7 +105,7 @@ class Schedule(commands.Cog):
         embed.add_field(name="Lobby", value=f"1 / {player_amount}", inline=True)
         embed.add_field(name="Organizer", value=ctx.author.mention, inline=True)
         embed.add_field(name="Players", value=ctx.author.mention, inline=False)
-        embed.set_footer(text="React with ✅ to join or un-react to leave.")
+        embed.set_footer(text="✅ Join/Leave | Organizer: ❗ to Remind (within 30 mins prior)")
 
         # For hybrid commands, we send the public message to the channel, not as a reply
         msg = await ctx.channel.send(embed=embed) 
@@ -126,36 +126,7 @@ class Schedule(commands.Cog):
             events[str(msg.id)] = event_data
 
         await msg.add_reaction("✅")
-
-    @commands.hybrid_command()
-    @commands.guild_only()
-    async def remind(self, ctx: commands.Context):
-        """Pings attendees of a game starting soon."""
-        if not (isinstance(ctx.channel, discord.Thread) and await self.config.guild(ctx.guild).target_forum_id()):
-            return await ctx.send("This can only be run in a schedule thread.", ephemeral=True)
-
-        async with self.config.guild(ctx.guild).scheduled_events() as events:
-            event_to_remind = None
-            for msg_id, event_data in events.items():
-                if event_data["channel_id"] == ctx.channel.id:
-                    event_to_remind = event_data
-                    break
-            
-            if not event_to_remind:
-                return await ctx.send("No active schedule found in this thread.", ephemeral=True)
-
-            now = datetime.now(timezone.utc).timestamp()
-            start_time = event_to_remind["start_timestamp"]
-            
-            if not (start_time - 1800) < now < (start_time + 900):
-                return await ctx.send("You can only send a reminder from 30 minutes before to 15 minutes after the event starts.", ephemeral=True)
-
-            attendee_pings = " ".join([f"<@{uid}>" for uid in event_to_remind["attendees"]])
-            
-            # Acknowledge the slash command first with a hidden message
-            await ctx.send("Sending reminder...", ephemeral=True)
-            # Then send the public ping to the channel
-            await ctx.channel.send(f"**Reminder for {event_to_remind['game_title']}!**\nGame is starting now!\n{attendee_pings}")
+        await msg.add_reaction("❗") # ADDED reaction for reminder
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -166,7 +137,8 @@ class Schedule(commands.Cog):
         await self._handle_reaction(payload, "remove")
 
     async def _handle_reaction(self, payload: discord.RawReactionActionEvent, action: str):
-        if payload.guild_id is None or str(payload.emoji) != "✅":
+        # MODIFIED: Removed initial emoji check, will check emoji later
+        if payload.guild_id is None:
             return
 
         guild = self.bot.get_guild(payload.guild_id)
@@ -174,56 +146,101 @@ class Schedule(commands.Cog):
             return
 
         try:
-            channel = await self.bot.fetch_channel(payload.channel_id)
+            # Fetch user who reacted
             user = await guild.fetch_member(payload.user_id)
+            # Fetch channel where reaction happened
+            channel = await self.bot.fetch_channel(payload.channel_id)
         except discord.NotFound:
-            return
+            return # User or channel not found
         
-        if not user or user.bot:
+        if not user or user.bot: # Ignore reactions from bots or if user is somehow None
             return
 
         async with self.config.guild(guild).scheduled_events() as events:
             event_data = events.get(str(payload.message_id))
-            if not event_data:
+            if not event_data: # Not a schedule message we are tracking
                 return
             
             try:
                 message = await channel.fetch_message(payload.message_id)
-            except discord.NotFound:
-                del events[str(payload.message_id)]
+            except discord.NotFound: # Original message deleted
+                if str(payload.message_id) in events:
+                    del events[str(payload.message_id)] # Clean up stale event
                 return
 
-            attendees = event_data["attendees"]
-            limit = event_data["player_limit"]
+            # Handling ✅ emoji for sign-ups/leaving
+            if str(payload.emoji) == "✅":
+                attendees = event_data["attendees"] # This is a list
+                limit = event_data["player_limit"]
 
-            if action == "add":
-                if user.id not in attendees and len(attendees) < limit:
-                    attendees.append(user.id)
-                elif user.id in attendees:
-                    return
+                if action == "add":
+                    if user.id not in attendees and len(attendees) < limit:
+                        attendees.append(user.id)
+                    elif user.id in attendees:
+                        # User already in attendees, reaction is redundant, do nothing.
+                        return
+                    else: # User not in attendees but lobby is full
+                        try:
+                            await message.remove_reaction(payload.emoji, user)
+                        except (discord.Forbidden, discord.NotFound):
+                            pass # Bot lacks permission or reaction already gone
+                        return 
+                
+                elif action == "remove":
+                    if user.id in attendees:
+                        if user.id == event_data["organizer_id"]:
+                            # Organizer trying to un-react "✅", prevent this by re-adding.
+                            # They should use a command to cancel/manage the event.
+                            try:
+                                await message.add_reaction(payload.emoji)
+                            except (discord.Forbidden, discord.NotFound):
+                                pass
+                            return
+                        attendees.remove(user.id)
+                    else:
+                        # User was not in attendees, so un-reacting does nothing to our list.
+                        return
+
+                event_data["attendees"] = attendees # Update the list in event_data
+                # events[str(payload.message_id)] = event_data # This is saved by async with
+                await self._update_embed(message, event_data)
+
+            # Handling ❗ emoji for reminders by organizer
+            elif str(payload.emoji) == "❗" and action == "add": # Only trigger on adding the reaction
+                if user.id == event_data["organizer_id"]:
+                    now_ts = datetime.now(timezone.utc).timestamp()
+                    start_time_ts = event_data["start_timestamp"]
+                    
+                    # Reminder can be sent if current time is within 30 minutes before event start
+                    # and the event has not started yet.
+                    if (start_time_ts - 1800) < now_ts < start_time_ts:
+                        attendee_pings = " ".join([f"<@{uid}>" for uid in event_data["attendees"]])
+                        game_title = event_data['game_title']
+                        
+                        if hasattr(channel, 'send'): # Check if channel can send messages
+                             await channel.send(f"**Reminder for {game_title}!**\\nGame is starting in less than 30 minutes!\\n{attendee_pings}")
+                        
+                        # Remove the ❗ reaction after sending reminder to prevent spam / indicate action taken
+                        try:
+                            await message.remove_reaction(payload.emoji, user) # Organizer's own reaction
+                        except (discord.Forbidden, discord.NotFound):
+                            pass 
+                    else:
+                        # Time condition not met, remove reaction to prevent confusion
+                        # This also serves as feedback to the organizer that it's not time yet.
+                        try:
+                            await message.remove_reaction(payload.emoji, user)
+                        except (discord.Forbidden, discord.NotFound):
+                            pass
+                        return 
                 else:
+                    # Non-organizer reacted with ❗, remove their reaction
                     try:
                         await message.remove_reaction(payload.emoji, user)
-                    except discord.Forbidden:
+                    except (discord.Forbidden, discord.NotFound):
                         pass
                     return
-            
-            elif action == "remove":
-                if user.id in attendees:
-                    if user.id == event_data["organizer_id"]:
-                        try:
-                            await message.add_reaction(payload.emoji)
-                        except discord.Forbidden:
-                            pass
-                        return
-                    attendees.remove(user.id)
-                else:
-                    return
-
-            event_data["attendees"] = attendees
-            events[str(payload.message_id)] = event_data
-            
-            await self._update_embed(message, event_data)
+            # Other emojis or "remove" action for "❗" are ignored by this custom logic.
 
     async def _update_embed(self, message: discord.Message, event_data: dict):
         unix_timestamp = event_data['start_timestamp']
@@ -239,7 +256,7 @@ class Schedule(commands.Cog):
         
         player_mentions = " ".join([f"<@{uid}>" for uid in event_data["attendees"]])
         new_embed.add_field(name="Players", value=player_mentions or "No one has joined yet.", inline=False)
-        new_embed.set_footer(text="React with ✅ to join or un-react to leave.")
+        new_embed.set_footer(text="✅ Join/Leave | Organizer: ❗ to Remind (within 30 mins prior)")
         
         await message.edit(embed=new_embed)
 
