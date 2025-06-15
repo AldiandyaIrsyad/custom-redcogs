@@ -235,7 +235,7 @@ class Schedule(commands.Cog):
                         game_title_for_reminder = event_data.get('game_title', "The Game") # Use stored game_title
                         
                         if hasattr(channel, 'send'): # Check if channel can send messages
-                             await channel.send(f"**Reminder for {game_title_for_reminder}!**\\nGame is starting in less than 30 minutes!\\n{attendee_pings}")
+                             await channel.send(f"**Reminder for {game_title_for_reminder}!**\nGame is starting in less than 30 minutes!\n{attendee_pings}")
                         
                         # Remove the ❗ reaction after sending reminder to prevent spam / indicate action taken
                         try:
@@ -307,18 +307,18 @@ class Schedule(commands.Cog):
                 players_needed = player_limit - current_attendees_count
 
                 description_text = (
-                    f"A game session has been shared by {user.mention}!\\n"
-                    f"**Title:** {game_title_for_share}\\n"
-                    f"**Starts:** <t:{event_data['start_timestamp']}:F> (<t:{event_data['start_timestamp']}:R>)\\n"
+                    f"A game session has been shared by {user.mention}!\n"
+                    f"**Title:** {game_title_for_share}\n"
+                    f"**Starts:** <t:{event_data['start_timestamp']}:F> (<t:{event_data['start_timestamp']}:R>)\n"
                 )
                 if players_needed > 0:
-                    description_text += f"**Players Needed:** {players_needed} more\\n"
+                    description_text += f"**Players Needed:** {players_needed} more\n"
                 elif players_needed == 0:
-                    description_text += "**Lobby is full!**\\n"
+                    description_text += "**Lobby is full!**\n"
                 else: # Should not happen if logic is correct, but as a fallback
-                    description_text += "**Lobby is overfull!**\\n"
+                    description_text += "**Lobby is overfull!**\n"
                 
-                description_text += f"\\n[Click here to view the schedule]({message.jump_url})"
+                description_text += f"\n[Click here to view the schedule]({message.jump_url})"
 
                 share_embed = discord.Embed(
                     title=f"📢 Game Announcement: {game_title_for_share}",
