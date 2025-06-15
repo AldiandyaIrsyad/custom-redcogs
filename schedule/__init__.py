@@ -19,6 +19,7 @@ class Schedule(commands.Cog):
         default_guild = {
             "target_forum_id": None,
             "scheduled_events": {}, # {message_id: {data}}
+            "share_channel_id": None, # Added for share feature
         }
         default_member = {
             "timezone": None
@@ -40,6 +41,13 @@ class Schedule(commands.Cog):
         """Sets the forum channel for scheduling games."""
         await self.config.guild(ctx.guild).target_forum_id.set(forum.id)
         await ctx.send(f"✅ The scheduling forum has been set to {forum.mention}.")
+
+    @schedule_set.command(name="sharechannel")
+    @app_commands.describe(channel="The text channel where shared schedules will be posted.")
+    async def set_share_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Sets the channel for sharing scheduled games."""
+        await self.config.guild(ctx.guild).share_channel_id.set(channel.id)
+        await ctx.send(f"✅ The schedule sharing channel has been set to {channel.mention}.")
 
     # Corrected with the app_commands.describe decorator
     @commands.hybrid_command()
@@ -109,7 +117,7 @@ class Schedule(commands.Cog):
         embed.add_field(name="Lobby", value=f"1 / {player_amount}", inline=True)
         embed.add_field(name="Organizer", value=ctx.author.mention, inline=True)
         embed.add_field(name="Players", value=ctx.author.mention, inline=False)
-        embed.set_footer(text="✅ Join/Leave | Organizer: ❗ to Remind (within 30 mins prior)")
+        embed.set_footer(text="✅ Join/Leave | Organizer: ❗ Remind | 📢 Share") # Updated footer
 
         # For hybrid commands, we send the public message to the channel, not as a reply
         msg = await ctx.channel.send(embed=embed) 
@@ -125,6 +133,7 @@ class Schedule(commands.Cog):
             "start_timestamp": unix_timestamp,
             "channel_id": ctx.channel.id,
             "attendees": [ctx.author.id],
+            "last_shared_timestamp": 0, # Added for share feature
         }
 
         async with self.config.guild(ctx.guild).scheduled_events() as events:
@@ -132,6 +141,7 @@ class Schedule(commands.Cog):
 
         await msg.add_reaction("✅")
         await msg.add_reaction("❗") # ADDED reaction for reminder
+        await msg.add_reaction("📢") # Added reaction for sharing
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -249,6 +259,88 @@ class Schedule(commands.Cog):
                     return
             # Other emojis or "remove" action for "❗" are ignored by this custom logic.
 
+            # Handling 📢 emoji for sharing
+            elif str(payload.emoji) == "📢" and action == "add":
+                share_channel_id = await self.config.guild(guild).share_channel_id()
+                if not share_channel_id:
+                    try:
+                        await user.send("The share channel has not been set up for this server. Please ask an admin to use `[p]scheduleset sharechannel`.", ephemeral=True)
+                    except discord.Forbidden: # Cannot DM user
+                        pass
+                    try: # Remove reaction if cannot DM or channel not set
+                        await message.remove_reaction(payload.emoji, user)
+                    except (discord.Forbidden, discord.NotFound):
+                        pass
+                    return
+
+                share_channel = guild.get_channel(share_channel_id)
+                if not share_channel or not isinstance(share_channel, discord.TextChannel):
+                    try:
+                        await user.send("The configured share channel is invalid or no longer accessible. Please inform an admin.", ephemeral=True)
+                    except discord.Forbidden:
+                        pass
+                    try:
+                        await message.remove_reaction(payload.emoji, user)
+                    except (discord.Forbidden, discord.NotFound):
+                        pass
+                    return
+
+                last_shared = event_data.get("last_shared_timestamp", 0)
+                current_time = int(datetime.now(timezone.utc).timestamp())
+
+                if current_time - last_shared < 3600: # 3600 seconds = 1 hour
+                    minutes_remaining = (3600 - (current_time - last_shared)) // 60
+                    try:
+                        await user.send(f"This schedule was shared recently. Please try again in about {minutes_remaining} minute(s).", ephemeral=True)
+                    except discord.Forbidden:
+                        pass
+                    try:
+                        await message.remove_reaction(payload.emoji, user)
+                    except (discord.Forbidden, discord.NotFound):
+                        pass
+                    return
+
+                # Proceed to share
+                game_title_for_share = event_data.get('game_title', "A Game")
+                share_embed = discord.Embed(
+                    title=f"📢 Game Announcement: {game_title_for_share}",
+                    description=(
+                        f"A game session has been shared by {user.mention}!\n"
+                        f"**Title:** {game_title_for_share}\n"
+                        f"**Starts:** <t:{event_data['start_timestamp']}:F> (<t:{event_data['start_timestamp']}:R>)\n\n"
+                        f"[Click here to view the schedule]({message.jump_url})"
+                    ),
+                    color=discord.Color.green()
+                )
+                if event_data.get("description"):
+                    share_embed.add_field(name="Description", value=event_data["description"], inline=False)
+
+                try:
+                    await share_channel.send(embed=share_embed)
+                    event_data["last_shared_timestamp"] = current_time
+                    # events[str(payload.message_id)] = event_data # Saved by async with
+                    try:
+                        await user.send(f"✅ Successfully shared '{game_title_for_share}' to {share_channel.mention}!", ephemeral=True)
+                    except discord.Forbidden:
+                        pass # User has DMs disabled
+                except discord.Forbidden:
+                    try:
+                        await user.send(f"I don't have permission to send messages in {share_channel.mention}. Please inform an admin.", ephemeral=True)
+                    except discord.Forbidden:
+                        pass
+                except Exception as e: # Catch other potential errors
+                    # Log the error, self.bot.log.error(f"Failed to share schedule: {e}")
+                    try:
+                        await user.send("An error occurred while trying to share the schedule.", ephemeral=True)
+                    except discord.Forbidden:
+                        pass
+                finally: # Always try to remove reaction after processing
+                    try:
+                        await message.remove_reaction(payload.emoji, user)
+                    except (discord.Forbidden, discord.NotFound):
+                        pass
+
+
     async def _update_embed(self, message: discord.Message, event_data: dict):
         unix_timestamp = event_data['start_timestamp']
         game_title_for_embed = event_data.get('game_title', "Unknown Game") # Use stored game_title
@@ -267,7 +359,7 @@ class Schedule(commands.Cog):
         
         player_mentions = " ".join([f"<@{uid}>" for uid in event_data["attendees"]])
         new_embed.add_field(name="Players", value=player_mentions or "No one has joined yet.", inline=False)
-        new_embed.set_footer(text="✅ Join/Leave | Organizer: ❗ to Remind (within 30 mins prior)")
+        new_embed.set_footer(text="✅ Join/Leave | Organizer: ❗ Remind (within 30 mins prior) | 📢 Share") # Updated footer
         
         await message.edit(embed=new_embed)
 
