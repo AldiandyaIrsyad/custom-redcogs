@@ -302,14 +302,27 @@ class Schedule(commands.Cog):
 
                 # Proceed to share
                 game_title_for_share = event_data.get('game_title', "A Game")
+                player_limit = event_data.get("player_limit", 0)
+                current_attendees_count = len(event_data.get("attendees", []))
+                players_needed = player_limit - current_attendees_count
+
+                description_text = (
+                    f"A game session has been shared by {user.mention}!\\n"
+                    f"**Title:** {game_title_for_share}\\n"
+                    f"**Starts:** <t:{event_data['start_timestamp']}:F> (<t:{event_data['start_timestamp']}:R>)\\n"
+                )
+                if players_needed > 0:
+                    description_text += f"**Players Needed:** {players_needed} more\\n"
+                elif players_needed == 0:
+                    description_text += "**Lobby is full!**\\n"
+                else: # Should not happen if logic is correct, but as a fallback
+                    description_text += "**Lobby is overfull!**\\n"
+                
+                description_text += f"\\n[Click here to view the schedule]({message.jump_url})"
+
                 share_embed = discord.Embed(
                     title=f"📢 Game Announcement: {game_title_for_share}",
-                    description=(
-                        f"A game session has been shared by {user.mention}!\n"
-                        f"**Title:** {game_title_for_share}\n"
-                        f"**Starts:** <t:{event_data['start_timestamp']}:F> (<t:{event_data['start_timestamp']}:R>)\n\n"
-                        f"[Click here to view the schedule]({message.jump_url})"
-                    ),
+                    description=description_text,
                     color=discord.Color.green()
                 )
                 if event_data.get("description"):
