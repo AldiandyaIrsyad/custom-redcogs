@@ -125,6 +125,9 @@ class Schedule(commands.Cog):
         # Then, we send a confirmation to the user who ran the command
         await ctx.send(f"✅ Your event for **{game_title}** has been scheduled!", ephemeral=True)
         
+        # Get applied tags from the thread
+        thread_tags = [tag.name for tag in ctx.channel.applied_tags]
+
         event_data = {
             "organizer_id": ctx.author.id,
             "player_limit": player_amount,
@@ -134,6 +137,7 @@ class Schedule(commands.Cog):
             "channel_id": ctx.channel.id,
             "attendees": [ctx.author.id],
             "last_shared_timestamp": 0, # Added for share feature
+            "tags": thread_tags, # Store the thread tags
         }
 
         async with self.config.guild(ctx.guild).scheduled_events() as events:
@@ -305,12 +309,17 @@ class Schedule(commands.Cog):
                 player_limit = event_data.get("player_limit", 0)
                 current_attendees_count = len(event_data.get("attendees", []))
                 players_needed = player_limit - current_attendees_count
+                event_tags = event_data.get("tags", []) # Get stored tags
 
                 description_text = (
                     f"A game session has been shared by {user.mention}!\n"
                     f"**Title:** {game_title_for_share}\n"
                     f"**Starts:** <t:{event_data['start_timestamp']}:F> (<t:{event_data['start_timestamp']}:R>)\n"
                 )
+                if event_tags:
+                    tags_formatted = " ".join([f"`#{tag}`" for tag in event_tags])
+                    description_text += f"**Tags:** {tags_formatted}\n"
+
                 if players_needed > 0:
                     description_text += f"**Players Needed:** {players_needed} more\n"
                 elif players_needed == 0:
