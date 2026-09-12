@@ -9,3 +9,4 @@ __pycache__/
 !.env.example
 .pytest_cache/
 .test-data/
+docs/
