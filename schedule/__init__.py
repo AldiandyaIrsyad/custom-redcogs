@@ -1,4 +1,6 @@
-from redbot.core import commands, Config
+import asyncio
+
+from redbot.core import commands as red_commands, Config
 from redbot.core.bot import Red
 
 from .commands import ScheduleCommands
@@ -7,7 +9,7 @@ from .helpers import ScheduleHelpers
 
 
 class Schedule(
-    ScheduleCommands, ScheduleListeners, ScheduleHelpers, commands.Cog
+    ScheduleCommands, ScheduleListeners, ScheduleHelpers, red_commands.Cog
 ):
     """
     A cog to schedule games in forum posts with timezone support and reaction-based sign-ups.
@@ -28,6 +30,7 @@ class Schedule(
             bot: The Redbot instance.
         """
         self.bot = bot
+        self._event_locks = {}
         self.config = Config.get_conf(
             self, identifier=1234567890, force_registration=True
         )
@@ -41,6 +44,10 @@ class Schedule(
 
         self.config.register_guild(**default_guild)
         self.config.register_member(**default_member)
+
+    def _event_lock(self, guild_id: int):
+        """Serialize event changes without nesting Red Config transactions."""
+        return self._event_locks.setdefault(guild_id, asyncio.Lock())
 
 
 async def setup(bot: Red):
