@@ -64,6 +64,38 @@ async def test_duplicate_join_and_leave_are_idempotent(cog):
     assert (await cog.config.guild(guild).scheduled_events())["100"]["attendees"] == [1]
 
 
+async def test_attendance_is_saved_before_embed_update(cog):
+    guild, _, message, _, _ = await prepare(cog, event())
+    observed = []
+
+    async def inspect_update(*args, **kwargs):
+        observed.append(
+            (await cog.config.guild(guild).scheduled_events())["100"]["attendees"]
+        )
+
+    message.edit.side_effect = inspect_update
+
+    await cog._handle_reaction(payload(), "add")
+
+    assert observed == [[1, 2]]
+    assert (await cog.config.guild(guild).scheduled_events())["100"]["attendees"] == [
+        1,
+        2,
+    ]
+
+
+async def test_attendance_state_survives_embed_update_failure(cog):
+    guild, _, message, _, _ = await prepare(cog, event())
+    message.edit.side_effect = discord.Forbidden(Mock(), "forbidden")
+
+    await cog._handle_reaction(payload(), "add")
+
+    assert (await cog.config.guild(guild).scheduled_events())["100"]["attendees"] == [
+        1,
+        2,
+    ]
+
+
 async def test_irrelevant_reaction_does_no_http(cog):
     guild, channel, _, _, _ = await prepare(cog, event())
     await cog._handle_reaction(payload(emoji="🦆"), "add")

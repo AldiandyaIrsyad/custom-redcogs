@@ -1,0 +1,10 @@
+{
+  "author": ["Aldiandya Irsyad"],
+  "install_msg": "Configure lfgset forum, optionally lfgset sharechannel, then lfgtimezone before creating sessions. Optionally enable session EXP and reward roles with lfgset exp toggle. Run help lfg for examples.",
+  "name": "LFG",
+  "short": "Looking For Group: organizes game sessions in forum posts with optional EXP and role rewards.",
+  "description": "Create Looking For Group session messages in a Discord forum post, using the post's title as the game name. Members join or leave with a reaction, and an optional EXP tracker grants reward roles for attending successful sessions.",
+  "tags": ["lfg", "looking-for-group", "session", "forum", "utility", "exp", "roles"],
+  "requirements": ["dateparser>=1.2,<2", "pytz>=2024.2"],
+  "end_user_data_statement": "Stores member timezone preferences per server, per-member session EXP and successful-session counts used for reward roles, credited session IDs for resumable payouts, and session organizer/attendee Discord IDs, channel/message IDs, session details, action timestamps, and EXP payout progress. Session messages and announcements are also posted to Discord."
+}

@@ -1,7 +1,7 @@
 {
   "author": ["Aldiandya Irsyad"],
-  "name": "Custom Cogs for ING",
-  "short": "A repository of cogs being used in my Red Discord Bot instance.",
-  "description": "Custom cogs for my Red Discord Bot instance.",
+  "name": "Custom Cogs",
+  "short": "A collection of custom cogs for Red-DiscordBot.",
+  "description": "Custom cogs for Red-DiscordBot, including a Looking For Group (LFG) cog for forum-based game sessions with optional EXP and role rewards.",
   "install_msg": "Thanks for adding my repo!"
 }

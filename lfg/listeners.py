@@ -9,9 +9,9 @@ class _StaleEventChannel(Exception):
     """Raised when Discord confirms that an event's channel was deleted."""
 
 
-class ScheduleListeners:
+class LFGListeners:
     """
-    Listeners and reaction handling for the Schedule cog.
+    Listeners and reaction handling for the LFG cog.
 
     Reaction events are serialized per guild by ``_event_lock``. The lock is
     deliberately held while the event action runs, but Config contexts are
@@ -26,17 +26,17 @@ class ScheduleListeners:
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """Handle a reaction added to a scheduled event message."""
+        """Handle a reaction added to a session message."""
         await self._handle_reaction(payload, "add")
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
-        """Handle a reaction removed from a scheduled event message."""
+        """Handle a reaction removed from a session message."""
         await self._handle_reaction(payload, "remove")
 
     @commands.Cog.listener()
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
-        """Prune a schedule immediately when its message is deleted."""
+        """Prune a session immediately when its message is deleted."""
         if payload.guild_id is None:
             return
         guild = self.bot.get_guild(payload.guild_id)
@@ -49,7 +49,7 @@ class ScheduleListeners:
     async def on_raw_bulk_message_delete(
         self, payload: discord.RawBulkMessageDeleteEvent
     ):
-        """Prune all schedules covered by a bulk message deletion event."""
+        """Prune all sessions covered by a bulk message deletion event."""
         if payload.guild_id is None or not payload.message_ids:
             return
         guild = self.bot.get_guild(payload.guild_id)
@@ -62,7 +62,7 @@ class ScheduleListeners:
 
     @commands.Cog.listener()
     async def on_raw_thread_delete(self, payload: discord.RawThreadDeleteEvent):
-        """Prune schedules when a whole forum post is deleted."""
+        """Prune sessions when a whole forum post is deleted."""
 
         guild = self.bot.get_guild(payload.guild_id)
         if guild is None:
@@ -76,7 +76,7 @@ class ScheduleListeners:
     async def _handle_reaction(
         self, payload: discord.RawReactionActionEvent, action: str
     ):
-        """Process one schedule reaction while holding its guild event lock."""
+        """Process one session reaction while holding its guild event lock."""
         if action not in {"add", "remove"} or payload.guild_id is None:
             return
 
@@ -129,7 +129,7 @@ class ScheduleListeners:
                 return
             except discord.Forbidden as exc:
                 self._log_http_error(
-                    "fetch schedule message",
+                    "fetch session message",
                     exc,
                     guild_id=payload.guild_id,
                     channel_id=payload.channel_id,
@@ -141,7 +141,7 @@ class ScheduleListeners:
                     await self._delete_event(guild, event_key)
                     return
                 self._log_http_error(
-                    "fetch schedule message",
+                    "fetch session message",
                     exc,
                     guild_id=payload.guild_id,
                     channel_id=payload.channel_id,
@@ -250,7 +250,7 @@ class ScheduleListeners:
                 return False
             except (discord.Forbidden, discord.HTTPException) as exc:
                 self._log_http_error(
-                    "clear legacy schedule reaction",
+                    "clear legacy session reaction",
                     exc,
                     message_id=getattr(message, "id", None),
                     emoji=emoji,
@@ -275,7 +275,7 @@ class ScheduleListeners:
                 events[event_key] = copy.deepcopy(event_data)
 
     async def _delete_event(self, guild: discord.Guild, event_key: str):
-        """Remove a schedule whose channel or message has gone away."""
+        """Remove a session whose channel or message has gone away."""
         async with self.config.guild(guild).scheduled_events() as events:
             events.pop(event_key, None)
 
@@ -294,18 +294,18 @@ class ScheduleListeners:
         try:
             return await fetch_channel(channel_id)
         except discord.NotFound as exc:
-            self._log_http_error("fetch schedule channel", exc, channel_id=channel_id)
+            self._log_http_error("fetch session channel", exc, channel_id=channel_id)
             raise _StaleEventChannel from exc
         except discord.Forbidden as exc:
             self._log_http_error(
-                "fetch schedule channel", exc, channel_id=channel_id
+                "fetch session channel", exc, channel_id=channel_id
             )
             return None
         except discord.HTTPException as exc:
             if getattr(exc, "status", None) == 404:
                 raise _StaleEventChannel from exc
             self._log_http_error(
-                "fetch schedule channel", exc, channel_id=channel_id
+                "fetch session channel", exc, channel_id=channel_id
             )
             return None
 
@@ -343,7 +343,12 @@ class ScheduleListeners:
         action: str,
         emoji,
     ):
-        """Apply join/leave state, update the message, and then persist it."""
+        """Persist join/leave state, then refresh the Discord message.
+
+        Config is the durable source of truth for attendance. Save the new
+        snapshot before making the Discord API call so a failed embed edit
+        cannot discard an otherwise accepted reaction.
+        """
         attendees = list(event_data.get("attendees") or [])
         player_limit = self._as_int(event_data.get("player_limit"), 0)
         user_id = user.id
@@ -355,7 +360,7 @@ class ScheduleListeners:
                 await self._remove_reaction(message, emoji, user)
                 await self._safe_dm(
                     user,
-                    "This schedule's lobby is full.",
+                    "This session's lobby is full.",
                     "send full-lobby DM",
                 )
                 return
@@ -382,6 +387,10 @@ class ScheduleListeners:
             return
 
         event_data["attendees"] = attendees
+        # Persist before touching Discord. If the message update fails, the
+        # reaction event and the durable attendee state still agree; the next
+        # successful refresh can bring the card back in sync.
+        await self._save_event(guild, event_key, event_data)
         try:
             await self._update_embed(message, event_data)
         except discord.NotFound:
@@ -389,7 +398,7 @@ class ScheduleListeners:
             return
         except discord.Forbidden as exc:
             self._log_http_error(
-                "update schedule message", exc, message_id=message.id
+                "update session message", exc, message_id=message.id
             )
             return
         except discord.HTTPException as exc:
@@ -397,11 +406,9 @@ class ScheduleListeners:
                 await self._delete_event(guild, event_key)
                 return
             self._log_http_error(
-                "update schedule message", exc, message_id=message.id
+                "update session message", exc, message_id=message.id
             )
             return
-
-        await self._save_event(guild, event_key, event_data)
 
     async def _handle_reminder(
         self,
@@ -419,7 +426,7 @@ class ScheduleListeners:
 
         # A reminder is useful only during the 30 minutes before the event,
         # and only while the event is still upcoming. This prevents old
-        # schedule messages from being used as an unlimited reminder button.
+        # session messages from being used as an unlimited reminder button.
         if not 0 <= seconds_until_start <= self.REMINDER_WINDOW_SECONDS:
             await self._remove_reaction(message, emoji, organizer)
             return
@@ -441,7 +448,7 @@ class ScheduleListeners:
                 )
                 await self._safe_dm(
                     organizer,
-                    f"A reminder for this schedule was already sent. Please try again in about {remaining} minute(s).",
+                    f"A reminder for this session was already sent. Please try again in about {remaining} minute(s).",
                     "send reminder cooldown DM",
                 )
             return

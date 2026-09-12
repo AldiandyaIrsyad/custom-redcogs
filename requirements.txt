@@ -1,0 +1,2 @@
+dateparser>=1.2,<2
+pytz>=2024.2

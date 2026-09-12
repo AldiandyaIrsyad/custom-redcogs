@@ -6,7 +6,6 @@ __pycache__/
 .uv-cache/
 .env
 .env.*
-!.env.example
 .pytest_cache/
 .test-data/
-docs/
+internal_docs/

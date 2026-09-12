@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, Mock
 import discord
 import pytest
 
-from schedule import Schedule
-from schedule.commands import ScheduleCommands, normalize_message_id
+from lfg import LFG
+from lfg.commands import LFGCommands, normalize_message_id
 
 
 def event(**overrides):
@@ -174,11 +174,11 @@ async def test_manual_share_reports_send_failure_and_success(cog):
 )
 async def test_prefix_lifecycle_success_is_private(cog, monkeypatch, command_name, arguments, confirmation):
     if command_name == "reschedule":
-        import schedule.commands as schedule_commands
+        import lfg.commands as lfg_commands
 
         monkeypatch.setattr(
-            schedule_commands,
-            "parse_schedule_time",
+            lfg_commands,
+            "parse_session_time",
             lambda *args, **kwargs: (2000000000, None),
         )
 
@@ -229,7 +229,7 @@ async def test_prefix_lifecycle_uses_public_fallback_when_dm_fails(cog):
     author.send.assert_awaited_once()
     ctx.send.assert_awaited_once()
     assert ctx.send.await_args.args[0] == (
-        "The schedule was cancelled, but I couldn't DM the private confirmation."
+        "The session was cancelled, but I couldn't DM the private confirmation."
     )
     allowed_mentions = ctx.send.await_args.kwargs["allowed_mentions"]
     assert allowed_mentions.everyone is False
@@ -277,11 +277,11 @@ async def test_prefix_lifecycle_error_is_private(cog, command_name, arguments):
 )
 async def test_slash_lifecycle_success_is_ephemeral(cog, monkeypatch, command_name, arguments, confirmation):
     if command_name == "reschedule":
-        import schedule.commands as schedule_commands
+        import lfg.commands as lfg_commands
 
         monkeypatch.setattr(
-            schedule_commands,
-            "parse_schedule_time",
+            lfg_commands,
+            "parse_session_time",
             lambda *args, **kwargs: (2000000000, None),
         )
 
@@ -379,13 +379,13 @@ def test_thread_permission_preflight_uses_send_messages_in_threads(cog):
         guild=SimpleNamespace(me=object()),
     )
 
-    assert ScheduleCommands._missing_bot_permissions(ctx) == [
+    assert LFGCommands._missing_bot_permissions(ctx) == [
         "Send Messages in Threads"
     ]
 
     permissions.send_messages = False
     permissions.send_messages_in_threads = True
-    assert ScheduleCommands._missing_bot_permissions(ctx) == []
+    assert LFGCommands._missing_bot_permissions(ctx) == []
 
 
 async def test_public_event_edit_suppresses_mentions(cog):
@@ -400,12 +400,12 @@ async def test_public_event_edit_suppresses_mentions(cog):
     assert allowed_mentions.replied_user is False
 
 
-async def test_prefix_schedule_organizer_controls_are_sent_by_dm(cog, monkeypatch):
-    import schedule.commands as schedule_commands
+async def test_prefix_play_organizer_controls_are_sent_by_dm(cog, monkeypatch):
+    import lfg.commands as lfg_commands
 
     monkeypatch.setattr(
-        schedule_commands,
-        "parse_schedule_time",
+        lfg_commands,
+        "parse_session_time",
         lambda *args, **kwargs: (2000000000, None),
     )
     await cog.config.guild(SimpleNamespace(id=5)).target_forum_id.set(20)
@@ -443,7 +443,7 @@ async def test_prefix_schedule_organizer_controls_are_sent_by_dm(cog, monkeypatc
         send=AsyncMock(),
     )
 
-    await cog.schedule.callback(cog, ctx, 2, "tomorrow at 8pm")
+    await cog.lfg.callback(cog, ctx, 2, "tomorrow at 8pm")
 
     allowed_mentions = channel.send.await_args.kwargs["allowed_mentions"]
     assert allowed_mentions.everyone is False
@@ -452,18 +452,18 @@ async def test_prefix_schedule_organizer_controls_are_sent_by_dm(cog, monkeypatc
     assert allowed_mentions.replied_user is False
     channel.send.return_value.add_reaction.assert_awaited_once_with("✅")
     author.send.assert_awaited_once()
-    assert "scheduleremind" in author.send.await_args.args[0]
-    assert "scheduleshare" in author.send.await_args.args[0]
+    assert "lfg remind" in author.send.await_args.args[0]
+    assert "lfg share" in author.send.await_args.args[0]
     stored = await cog.config.guild(guild).scheduled_events()
     assert stored["100"]["private_controls"] is True
 
 
-async def test_slash_schedule_keeps_organizer_controls_ephemeral(cog, monkeypatch):
-    import schedule.commands as schedule_commands
+async def test_slash_play_keeps_organizer_controls_ephemeral(cog, monkeypatch):
+    import lfg.commands as lfg_commands
 
     monkeypatch.setattr(
-        schedule_commands,
-        "parse_schedule_time",
+        lfg_commands,
+        "parse_session_time",
         lambda *args, **kwargs: (2000000000, None),
     )
     guild = SimpleNamespace(id=5, me=None)
@@ -498,14 +498,14 @@ async def test_slash_schedule_keeps_organizer_controls_ephemeral(cog, monkeypatc
         send=AsyncMock(),
     )
 
-    await cog.schedule.callback(cog, ctx, 2, "tomorrow at 8pm")
+    await cog.lfg.callback(cog, ctx, 2, "tomorrow at 8pm")
 
     channel.send.return_value.add_reaction.assert_awaited_once_with("✅")
     author.send.assert_not_awaited()
     response = ctx.send.await_args
     assert response.kwargs["ephemeral"] is True
-    assert "/scheduleremind" in response.args[0]
-    assert "/scheduleshare" in response.args[0]
+    assert "/lfg remind" in response.args[0]
+    assert "/lfg share" in response.args[0]
 
 
 async def test_legacy_event_without_status_is_authorized_and_can_transition(cog):
@@ -592,19 +592,59 @@ async def test_upcoming_suppresses_mentions_in_event_titles(cog):
 
 @pytest.mark.parametrize("capacity,title,description", [(0, None, None), (101, None, None), (2, " ", None), (2, None, "x" * 1025)])
 def test_invalid_event_details_are_rejected(capacity, title, description):
-    assert ScheduleCommands._validate_event_details(capacity, title, description)[2]
+    assert LFGCommands._validate_event_details(capacity, title, description)[2]
 
 
 def test_slash_event_identifiers_use_strings():
     for name in (
-        "schedulecontrol",
-        "scheduleremind",
-        "scheduleshare",
-        "schedulereschedule",
-        "schedulecancel",
-        "schedulefinish",
+        "control",
+        "remind",
+        "share",
+        "reschedule",
+        "cancel",
+        "finish",
     ):
-        command = next(c for c in Schedule.__cog_commands__ if c.name == name)
+        command = next(c for c in LFG.__cog_commands__ if c.name == name)
         parameter = next(p for p in command.app_command.parameters if p.name == "message_id")
         assert parameter.type is discord.AppCommandOptionType.string
+
+
+def test_no_collision_prone_global_command_names():
+    """Only lfg-prefixed names may be global, so no common command collides.
+
+    A generic global like `play` collides with music cogs and prevents Red
+    from loading the cog, so the global command surface must stay minimal.
+    """
+
+    global_names = {c.name for c in LFG.__cog_commands__ if c.parent is None}
+    assert global_names == {"lfg", "lfgset", "lfgtimezone"}
+    assert "play" not in global_names
+    assert "playset" not in global_names
+    assert "settimezone" not in global_names
+
+
+def test_no_schedule_prefixed_commands_remain():
+    """The earlier Schedule naming must not leave any command behind."""
+
+    names = [c.qualified_name for c in LFG.__cog_commands__]
+    assert not [n for n in names if n.startswith("schedule")]
+
+
+def test_lfg_group_exposes_expected_subcommands():
+    subcommands = {
+        c.name for c in LFG.__cog_commands__ if c.parent is not None
+        and c.parent.name == "lfg"
+    }
+    assert subcommands == {
+        "start",
+        "control",
+        "remind",
+        "share",
+        "reschedule",
+        "cancel",
+        "finish",
+        "upcoming",
+        "exp",
+        "top",
+    }
 

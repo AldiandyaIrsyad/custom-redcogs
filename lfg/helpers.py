@@ -5,11 +5,11 @@ import discord
 from redbot.core.bot import Red
 
 
-schedule_logger = logging.getLogger("red.custom.schedule")
+lfg_logger = logging.getLogger("red.custom.lfg")
 
 
-class ScheduleHelpers:
-    """Helper methods for sharing and rendering scheduled events."""
+class LFGHelpers:
+    """Helper methods for sharing and rendering play sessions."""
 
     bot: Red
 
@@ -27,7 +27,7 @@ class ScheduleHelpers:
         remove_reaction_after_action: bool = True,
     ) -> bool:
         """
-        Share a schedule to the configured channel.
+        Share a session to the configured channel.
 
         The caller owns the per-guild event lock. This helper never acquires
         that lock, and it does not keep a Config context open across Discord
@@ -42,7 +42,7 @@ class ScheduleHelpers:
                 if remove_reaction_after_action:
                     await self._safe_dm(
                         user_who_triggered,
-                        "This schedule is no longer active and cannot be shared.",
+                        "This session is no longer active and cannot be shared.",
                         "send inactive-share DM",
                     )
                 return False
@@ -52,7 +52,7 @@ class ScheduleHelpers:
                 if remove_reaction_after_action:
                     await self._safe_dm(
                         user_who_triggered,
-                        "The share channel has not been set up for this server. Please ask an admin to use `[p]scheduleset sharechannel`.",
+                        "The share channel has not been set up for this server. Please ask an admin to use `[p]lfgset sharechannel`.",
                         "send missing-share-channel DM",
                     )
                 return False
@@ -77,12 +77,11 @@ class ScheduleHelpers:
                 and current_time - last_shared < 3600
             ):
                 minutes_remaining = max(1, (3600 - (current_time - last_shared) + 59) // 60)
-                if remove_reaction_after_action:
-                    await self._safe_dm(
-                        user_who_triggered,
-                        f"This schedule was shared recently. Please try again in about {minutes_remaining} minute(s).",
-                        "send share cooldown DM",
-                    )
+                await self._safe_dm(
+                    user_who_triggered,
+                    f"This session was shared recently. Please try again in about {minutes_remaining} minute(s).",
+                    "send share cooldown DM",
+                )
                 return False
 
             share_embed = self._build_share_embed(
@@ -95,7 +94,7 @@ class ScheduleHelpers:
                 )
             except discord.Forbidden as exc:
                 self._log_http_error(
-                    "share schedule",
+                    "share session",
                     exc,
                     guild_id=getattr(guild, "id", None),
                     channel_id=share_channel_id,
@@ -110,7 +109,7 @@ class ScheduleHelpers:
                 return False
             except discord.NotFound as exc:
                 self._log_http_error(
-                    "share schedule",
+                    "share session",
                     exc,
                     guild_id=getattr(guild, "id", None),
                     channel_id=share_channel_id,
@@ -125,7 +124,7 @@ class ScheduleHelpers:
                 return False
             except discord.HTTPException as exc:
                 self._log_http_error(
-                    "share schedule",
+                    "share session",
                     exc,
                     guild_id=getattr(guild, "id", None),
                     channel_id=share_channel_id,
@@ -134,7 +133,7 @@ class ScheduleHelpers:
                 if remove_reaction_after_action:
                     await self._safe_dm(
                         user_who_triggered,
-                        "An error occurred while trying to share the schedule.",
+                        "An error occurred while trying to share the session.",
                         "send share failure DM",
                     )
                 return False
@@ -160,33 +159,31 @@ class ScheduleHelpers:
             # Covers channel resolution and any Discord API call that was not
             # handled at its narrow call site. Keep the listener alive.
             self._log_http_error(
-                "share schedule",
+                "share session",
                 exc,
                 guild_id=getattr(guild, "id", None),
                 message_id=getattr(original_schedule_message, "id", None),
             )
             if remove_reaction_after_action:
-                if remove_reaction_after_action:
-                    await self._safe_dm(
-                        user_who_triggered,
-                        "An error occurred while trying to share the schedule.",
-                        "send share unexpected-failure DM",
-                    )
+                await self._safe_dm(
+                    user_who_triggered,
+                    "An error occurred while trying to share the session.",
+                    "send share unexpected-failure DM",
+                )
             return False
         except Exception as exc:
             self._log_exception(
-                "Unexpected error while sharing schedule",
+                "Unexpected error while sharing session",
                 exc,
                 guild_id=getattr(guild, "id", None),
                 message_id=getattr(original_schedule_message, "id", None),
             )
             if remove_reaction_after_action:
-                if remove_reaction_after_action:
-                    await self._safe_dm(
-                        user_who_triggered,
-                        "An error occurred while trying to share the schedule.",
-                        "send share unexpected-failure DM",
-                    )
+                await self._safe_dm(
+                    user_who_triggered,
+                    "An error occurred while trying to share the session.",
+                    "send share unexpected-failure DM",
+                )
             return False
         finally:
             if remove_reaction_after_action:
@@ -279,7 +276,7 @@ class ScheduleHelpers:
         elif status == "finished":
             embed_color = discord.Color.greyple()
         new_embed = discord.Embed(
-            title=self._truncate(f"Game Session: {title}", self.MAX_TITLE_LENGTH),
+            title=self._truncate(f"Play Session: {title}", self.MAX_TITLE_LENGTH),
             description=self._truncate(description, self.MAX_DESCRIPTION_LENGTH),
             color=embed_color,
         )
@@ -324,12 +321,12 @@ class ScheduleHelpers:
         if status == "active":
             footer = "✅ Join/Leave"
         else:
-            footer = f"{status.capitalize()} | Reactions are disabled for this schedule"
+            footer = f"{status.capitalize()} | Reactions are disabled for this session"
         new_embed.set_footer(text=self._truncate(footer, self.MAX_FOOTER_LENGTH))
         return new_embed
 
     async def _update_embed(self, message: discord.Message, event_data: dict):
-        """Update the schedule message with bounded event data."""
+        """Update the session message with bounded event data."""
         organizer_mention = None
         guild = getattr(message, "guild", None)
         organizer_id = event_data.get("organizer_id")
@@ -355,11 +352,11 @@ class ScheduleHelpers:
             return
         except discord.Forbidden as exc:
             self._log_http_error(
-                "remove schedule reaction", exc, message_id=getattr(message, "id", None)
+                "remove session reaction", exc, message_id=getattr(message, "id", None)
             )
         except discord.HTTPException as exc:
             self._log_http_error(
-                "remove schedule reaction", exc, message_id=getattr(message, "id", None)
+                "remove session reaction", exc, message_id=getattr(message, "id", None)
             )
 
     async def _safe_dm(self, user, content: str, operation: str):
@@ -389,14 +386,14 @@ class ScheduleHelpers:
         message = f"Discord HTTP error during {operation}"
         if details:
             message += f" ({details})"
-        schedule_logger.error(message)
+        lfg_logger.error(message)
 
     def _log_exception(self, operation: str, error, **context):
         details = ", ".join(f"{key}={value}" for key, value in context.items())
         message = f"{operation}: {error}"
         if details:
             message += f" ({details})"
-        schedule_logger.exception(message)
+        lfg_logger.exception(message)
 
     @staticmethod
     def _event_title(event_data: dict) -> str:
@@ -425,8 +422,3 @@ class ScheduleHelpers:
     @staticmethod
     def _same_id(left, right) -> bool:
         return left is not None and right is not None and str(left) == str(right)
-
-    @staticmethod
-    def _event_status(event_data: dict) -> str:
-        status = str(event_data.get("status") or "active").lower()
-        return status if status in {"active", "cancelled", "finished"} else "active"

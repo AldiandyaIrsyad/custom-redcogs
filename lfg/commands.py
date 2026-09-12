@@ -25,11 +25,11 @@ _RELATIVE_DURATION_RE = re.compile(
 )
 
 
-class ScheduleTimeError(ValueError):
-    """A user-facing error raised when a schedule time cannot be accepted."""
+class LFGTimeError(ValueError):
+    """A user-facing error raised when a session time cannot be accepted."""
 
 
-def parse_schedule_time(
+def parse_session_time(
     time_input: str,
     timezone_name: str,
     *,
@@ -44,12 +44,12 @@ def parse_schedule_time(
     """
 
     if not isinstance(time_input, str) or not time_input.strip():
-        raise ScheduleTimeError("Please provide a time, such as `tomorrow at 8pm`.")
+        raise LFGTimeError("Please provide a time, such as `tomorrow at 8pm`.")
 
     try:
         target_tz = pytz.timezone(timezone_name)
     except (pytz.UnknownTimeZoneError, AttributeError, TypeError):
-        raise ScheduleTimeError(f"`{timezone_name}` is not a valid timezone.") from None
+        raise LFGTimeError(f"`{timezone_name}` is not a valid timezone.") from None
 
     if now is None:
         now_utc = datetime.now(timezone.utc)
@@ -80,7 +80,7 @@ def parse_schedule_time(
         parsed = None
 
     if parsed is None:
-        raise ScheduleTimeError(
+        raise LFGTimeError(
             f"I couldn't understand `{time_input}`. Try `tomorrow at 8pm`."
         )
 
@@ -114,36 +114,36 @@ def parse_schedule_time(
             except pytz.AmbiguousTimeError:
                 pass
             except pytz.NonExistentTimeError:
-                raise ScheduleTimeError(
+                raise LFGTimeError(
                     f"`{time_input}` does not exist in `{timezone_name}` because daylight-saving time changes then. "
                     "Please choose another time."
                 ) from None
             localized = (explicit or parsed).astimezone(target_tz)
             if localized.replace(tzinfo=None) != wall_time:
-                raise ScheduleTimeError(
+                raise LFGTimeError(
                     f"The UTC offset in `{time_input}` does not match `{timezone_name}` at that local time."
                 )
         else:
             localized = target_tz.localize(wall_time, is_dst=None)
-    except ScheduleTimeError:
+    except LFGTimeError:
         raise
     except pytz.AmbiguousTimeError:
-        raise ScheduleTimeError(
+        raise LFGTimeError(
             f"`{time_input}` is ambiguous in `{timezone_name}` because daylight-saving time changes then. "
             "Please include an unambiguous time."
         ) from None
     except pytz.NonExistentTimeError:
-        raise ScheduleTimeError(
+        raise LFGTimeError(
             f"`{time_input}` does not exist in `{timezone_name}` because daylight-saving time changes then. "
             "Please choose another time."
         ) from None
     except (OverflowError, TypeError, ValueError):
-        raise ScheduleTimeError(
+        raise LFGTimeError(
             f"I couldn't understand `{time_input}`. Try `tomorrow at 8pm`."
         ) from None
 
     if localized.astimezone(timezone.utc) <= now_utc:
-        raise ScheduleTimeError("The schedule time must be in the future.")
+        raise LFGTimeError("The session time must be in the future.")
 
     return int(localized.timestamp()), localized
 
@@ -165,11 +165,11 @@ def normalize_message_id(value) -> int | None:
     return message_id if message_id > 0 else None
 
 
-class ScheduleCommands:
-    """Commands for the Schedule cog."""
+class LFGCommands:
+    """Commands for the LFG cog."""
 
     def _organizer_controls_text(self, ctx: commands.Context, message) -> str:
-        """Describe private controls for the organizer of a new schedule.
+        """Describe private controls for the organizer of a new session.
 
         Reactions are intentionally kept on the public card for attendance only.
         The action commands below remain hybrid commands so they work for both
@@ -179,30 +179,30 @@ class ScheduleCommands:
 
         if ctx.interaction:
             command_names = (
-                "`/scheduleremind`",
-                "`/scheduleshare`",
-                "`/schedulereschedule`",
-                "`/schedulecancel`",
-                "`/schedulefinish`",
+                "`/lfg remind`",
+                "`/lfg share`",
+                "`/lfg reschedule`",
+                "`/lfg cancel`",
+                "`/lfg finish`",
             )
         else:
             prefix = getattr(ctx, "clean_prefix", None) or "[p]"
             command_names = tuple(
-                f"`{prefix}{name}`"
+                f"`{prefix}lfg {name}`"
                 for name in (
-                    "scheduleremind",
-                    "scheduleshare",
-                    "schedulereschedule",
-                    "schedulecancel",
-                    "schedulefinish",
+                    "remind",
+                    "share",
+                    "reschedule",
+                    "cancel",
+                    "finish",
                 )
             )
-        message_id = getattr(message, "id", "the schedule message")
+        message_id = getattr(message, "id", "the session message")
         return (
             "Organizer controls (only you or a member with Manage Server can use them):\n"
             f"- {command_names[0]} `{message_id}` to remind attendees when the event starts within 30 minutes.\n"
             f"- {command_names[1]} `{message_id}` to post an announcement.\n"
-            f"- Use {command_names[2]}, {command_names[3]}, or {command_names[4]} with the message ID to manage its lifecycle."
+            f"- Use {command_names[2]}, {command_names[3]}, or {command_names[4]} with the message ID to manage its lifecycle. Finishing a session awards session EXP to its attendees when the server has enabled it."
         )
 
     async def _send_private_organizer_message(
@@ -235,7 +235,7 @@ class ScheduleCommands:
             except Exception as exc:
                 logger = getattr(self.bot, "log", None)
                 if logger:
-                    logger.error("Failed to DM schedule organizer controls: %s", exc)
+                    logger.error("Failed to DM play session organizer controls: %s", exc)
 
         # Prefix responses are public. Keep the fallback limited to recovery
         # guidance and do not print the private action details in the channel.
@@ -256,7 +256,7 @@ class ScheduleCommands:
         return await self._send_private_organizer_message(
             ctx,
             self._organizer_controls_text(ctx, message),
-            "I couldn't DM your private organizer controls. Use the organizer-only schedule commands with the schedule message ID.",
+            "I couldn't DM your private organizer controls. Use the organizer-only session commands with the session message ID.",
         )
 
     @asynccontextmanager
@@ -299,7 +299,7 @@ class ScheduleCommands:
             async with self.config.guild(ctx.guild).scheduled_events() as events:
                 event_data = events.get(str(message_id))
                 if not isinstance(event_data, dict):
-                    return None, "I couldn't find a schedule with that message ID."
+                    return None, "I couldn't find a session with that message ID."
 
                 is_organizer = self._same_id(
                     event_data.get("organizer_id"), ctx.author.id
@@ -348,7 +348,7 @@ class ScheduleCommands:
             logger = getattr(self.bot, "log", None)
             if logger:
                 logger.error(
-                    "Failed to update schedule message %s after a command: %s",
+                    "Failed to update session message %s after a command: %s",
                     message_id,
                     exc,
                 )
@@ -430,45 +430,45 @@ class ScheduleCommands:
 
         return clean_title, clean_description, None
 
-    @commands.hybrid_group(name="scheduleset", aliases=["ss"])
+    @commands.hybrid_group(name="lfgset")
     @commands.admin_or_permissions(manage_guild=True)
     @commands.guild_only()
-    async def schedule_set(self, ctx: commands.Context):
-        """Base command for schedule configuration."""
+    async def lfg_set(self, ctx: commands.Context):
+        """Base command for play session configuration."""
 
         pass
 
-    @schedule_set.command(name="forum")
+    @lfg_set.command(name="forum")
     @commands.admin_or_permissions(manage_guild=True)
     @commands.guild_only()
-    @app_commands.describe(forum="The forum channel where schedules will be created.")
+    @app_commands.describe(forum="The forum channel where play sessions will be created.")
     async def set_forum(self, ctx: commands.Context, forum: discord.ForumChannel):
-        """Set the designated forum channel for new game schedules."""
+        """Set the designated forum channel for new play sessions."""
 
         async with self._event_mutation_lock(ctx.guild.id):
             await self.config.guild(ctx.guild).target_forum_id.set(forum.id)
-        await ctx.send(f"✅ The scheduling forum has been set to {forum.mention}.")
+        await ctx.send(f"✅ The play session forum has been set to {forum.mention}.")
 
-    @schedule_set.command(name="sharechannel")
+    @lfg_set.command(name="sharechannel")
     @commands.admin_or_permissions(manage_guild=True)
     @commands.guild_only()
     @app_commands.describe(
-        channel="The text channel where shared schedules will be posted."
+        channel="The text channel where shared play sessions will be posted."
     )
     async def set_share_channel(self, ctx: commands.Context, channel: discord.TextChannel):
         """Set the designated text channel for shared announcements."""
 
         async with self._event_mutation_lock(ctx.guild.id):
             await self.config.guild(ctx.guild).share_channel_id.set(channel.id)
-        await ctx.send(f"✅ The schedule sharing channel has been set to {channel.mention}.")
+        await ctx.send(f"✅ The play session sharing channel has been set to {channel.mention}.")
 
-    @commands.hybrid_command()
+    @commands.hybrid_command(name="lfgtimezone")
     @commands.guild_only()
     @app_commands.describe(
         timezone_str="Your timezone name (e.g., 'Asia/Jakarta' or 'America/New_York')."
     )
-    async def settimezone(self, ctx: commands.Context, timezone_str: str):
-        """Set your personal timezone for scheduling."""
+    async def lfg_timezone(self, ctx: commands.Context, timezone_str: str):
+        """Set your personal timezone for play sessions."""
 
         try:
             tz = pytz.timezone(timezone_str.strip())
@@ -484,7 +484,35 @@ class ScheduleCommands:
         await self.config.member(ctx.author).timezone.set(str(tz))
         await ctx.send(f"✅ Your timezone has been set to `{tz}`.")
 
-    @commands.hybrid_command()
+    @commands.hybrid_group(name="lfg", invoke_without_command=True)
+    @commands.guild_only()
+    async def lfg(
+        self,
+        ctx: commands.Context,
+        player_amount: int = None,
+        time_input: str = None,
+        title: str = None,
+        description: str = None,
+    ):
+        """Create a play session in the configured forum thread.
+
+        Shorthand for the `start` subcommand, so prefix users can run
+        `[p]lfg <players> <time> [title] [description]` directly. Slash users
+        run `/lfg start <players> <time> [title] [description]`, because
+        Discord does not allow options and subcommands on the same command.
+        """
+
+        if player_amount is None or time_input is None:
+            prefix = getattr(ctx, "clean_prefix", None) or "[p]"
+            return await ctx.send(
+                f"Usage: `{prefix}lfg <players> <time> [title] [description]` "
+                f"or `{prefix}lfg start <players> <time> [title] [description]`.",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        await self._create_session(ctx, player_amount, time_input, title, description)
+
+    @lfg.command(name="start")
     @commands.guild_only()
     @app_commands.describe(
         player_amount="The maximum number of players for the lobby (1-100).",
@@ -492,7 +520,7 @@ class ScheduleCommands:
         title="Optional: A custom title for the game session (up to 256 characters).",
         description="Optional: A description for the game session (up to 1024 characters).",
     )
-    async def schedule(
+    async def lfg_start(
         self,
         ctx: commands.Context,
         player_amount: int,
@@ -500,7 +528,19 @@ class ScheduleCommands:
         title: str = None,
         description: str = None,
     ):
-        """Schedule a game session inside the designated forum thread."""
+        """Create a play session inside the designated forum thread."""
+
+        await self._create_session(ctx, player_amount, time_input, title, description)
+
+    async def _create_session(
+        self,
+        ctx: commands.Context,
+        player_amount: int,
+        time_input: str,
+        title: str = None,
+        description: str = None,
+    ):
+        """Create a play session inside the designated forum thread."""
 
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
@@ -508,20 +548,20 @@ class ScheduleCommands:
         target_forum_id = await self.config.guild(ctx.guild).target_forum_id()
         if not target_forum_id:
             return await ctx.send(
-                "The scheduling forum has not been set. An admin must use `[p]scheduleset forum`.",
+                "The play session forum has not been set. An admin must use `[p]lfgset forum`.",
                 ephemeral=True,
             )
 
         if not isinstance(ctx.channel, discord.Thread) or ctx.channel.parent_id != target_forum_id:
             return await ctx.send(
-                "This command can only be used inside a thread of the designated scheduling forum.",
+                "This command can only be used inside a thread of the designated play session forum.",
                 ephemeral=True,
             )
 
         missing_permissions = self._missing_bot_permissions(ctx)
         if missing_permissions:
             return await ctx.send(
-                "❌ I need these permissions in the scheduling thread: "
+                "❌ I need these permissions in the session thread: "
                 + ", ".join(missing_permissions)
                 + ".",
                 ephemeral=True,
@@ -535,8 +575,8 @@ class ScheduleCommands:
 
         timezone_name, used_default_timezone = await self._member_timezone(ctx.author)
         try:
-            unix_timestamp, _ = parse_schedule_time(time_input, timezone_name)
-        except ScheduleTimeError as exc:
+            unix_timestamp, _ = parse_session_time(time_input, timezone_name)
+        except LFGTimeError as exc:
             default_note = (
                 f" Your personal timezone is not set, so the default `{DEFAULT_TIMEZONE}` was used."
                 if used_default_timezone
@@ -581,12 +621,12 @@ class ScheduleCommands:
             )
         except discord.Forbidden:
             return await ctx.send(
-                "❌ I don't have permission to post the schedule in this thread.",
+                "❌ I don't have permission to post the session in this thread.",
                 ephemeral=True,
             )
         except discord.HTTPException:
             return await ctx.send(
-                "❌ I couldn't post the schedule message. Please try again.",
+                "❌ I couldn't post the session message. Please try again.",
                 ephemeral=True,
             )
 
@@ -602,7 +642,7 @@ class ScheduleCommands:
             except Exception:
                 pass
             return await ctx.send(
-                "❌ I couldn't save the schedule. Please try again.", ephemeral=True
+                "❌ I couldn't save the session. Please try again.", ephemeral=True
             )
 
         try:
@@ -676,7 +716,7 @@ class ScheduleCommands:
             async with self.config.guild(ctx.guild).scheduled_events() as events:
                 current = events.get(str(message_id))
                 if not isinstance(current, dict):
-                    return None, "I couldn't find a schedule with that message ID."
+                    return None, "I couldn't find a session with that message ID."
                 if not (
                     self._same_id(current.get("organizer_id"), ctx.author.id)
                     or self._has_manage_guild(ctx.author)
@@ -688,7 +728,7 @@ class ScheduleCommands:
                 if self._event_status(current) != "active":
                     return (
                         None,
-                        f"This schedule is already {self._event_status(current)}.",
+                        f"This session is already {self._event_status(current)}.",
                     )
                 event_data = self._event_copy(current)
 
@@ -696,7 +736,7 @@ class ScheduleCommands:
                 ctx.guild, message_id, event_data
             )
             if message is None:
-                return None, "I couldn't find the schedule message in Discord."
+                return None, "I couldn't find the session message in Discord."
 
             if action == "remind":
                 now = int(datetime.now(timezone.utc).timestamp())
@@ -728,7 +768,7 @@ class ScheduleCommands:
                 now = int(datetime.now(timezone.utc).timestamp())
                 if last_shared and now - last_shared < 3600:
                     remaining = max(1, (3600 - (now - last_shared) + 59) // 60)
-                    return None, f"This schedule was shared recently. Try again in about {remaining} minute(s)."
+                    return None, f"This session was shared recently. Try again in about {remaining} minute(s)."
                 shared = await self._share_schedule(
                     ctx.guild,
                     ctx.author,
@@ -742,20 +782,20 @@ class ScheduleCommands:
                     return None, "I couldn't post the announcement. Ask an admin to check the share channel and my permissions."
             return event_data, None
 
-    @commands.hybrid_command(name="schedulecontrol", aliases=["controls"])
+    @lfg.command(name="control", aliases=["controls"])
     @commands.guild_only()
     @app_commands.describe(
-        message_id="The schedule message ID or its Discord message URL."
+        message_id="The session message ID or its Discord message URL."
     )
     async def controls(self, ctx: commands.Context, message_id: str):
-        """Reopen the private organizer controls for an existing schedule."""
+        """Reopen the private organizer controls for an existing session."""
 
         message_id = normalize_message_id(message_id)
         if message_id is None:
             return await self._send_private_organizer_message(
                 ctx,
                 "❌ Please provide a valid Discord message ID or message URL.",
-                "I couldn't process the organizer control request. Please use a valid schedule message ID.",
+                "I couldn't process the organizer control request. Please use a valid session message ID.",
             )
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
@@ -764,7 +804,7 @@ class ScheduleCommands:
             return await self._send_private_organizer_message(
                 ctx,
                 f"❌ {error}",
-                "I couldn't verify your organizer controls. Check the schedule message ID and your permissions.",
+                "I couldn't verify your organizer controls. Check the session message ID and your permissions.",
             )
         control_text = self._organizer_controls_text(
             ctx, SimpleNamespace(id=message_id)
@@ -772,23 +812,23 @@ class ScheduleCommands:
         return await self._send_private_organizer_message(
             ctx,
             control_text,
-            "I couldn't DM your private organizer controls. Use the organizer-only schedule commands with the schedule message ID.",
+            "I couldn't DM your private organizer controls. Use the organizer-only session commands with the session message ID.",
         )
 
-    @commands.hybrid_command(name="scheduleremind", aliases=["remind"])
+    @lfg.command(name="remind", aliases=["reminder"])
     @commands.guild_only()
     @app_commands.describe(
-        message_id="The schedule message ID or its Discord message URL."
+        message_id="The session message ID or its Discord message URL."
     )
     async def remind(self, ctx: commands.Context, message_id: str):
-        """Privately notify attendees of an active schedule near its start."""
+        """Privately notify attendees of an active session near its start."""
 
         message_id = normalize_message_id(message_id)
         if message_id is None:
             return await self._send_private_organizer_message(
                 ctx,
                 "❌ Please provide a valid Discord message ID or message URL.",
-                "I couldn't process the reminder request. Please use a valid schedule message ID.",
+                "I couldn't process the reminder request. Please use a valid session message ID.",
             )
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
@@ -797,7 +837,7 @@ class ScheduleCommands:
             return await self._send_private_organizer_message(
                 ctx,
                 f"❌ {error}",
-                "I couldn't process the reminder request. Check the schedule ID and your permissions.",
+                "I couldn't process the reminder request. Check the session ID and your permissions.",
             )
         await self._send_private_organizer_message(
             ctx,
@@ -805,20 +845,20 @@ class ScheduleCommands:
             "The reminder action was processed. Check your DMs for delivery details.",
         )
 
-    @commands.hybrid_command(name="scheduleshare", aliases=["share"])
+    @lfg.command(name="share", aliases=["announce"])
     @commands.guild_only()
     @app_commands.describe(
-        message_id="The schedule message ID or its Discord message URL."
+        message_id="The session message ID or its Discord message URL."
     )
     async def share(self, ctx: commands.Context, message_id: str):
-        """Post an announcement for an active schedule."""
+        """Post an announcement for an active session."""
 
         message_id = normalize_message_id(message_id)
         if message_id is None:
             return await self._send_private_organizer_message(
                 ctx,
                 "❌ Please provide a valid Discord message ID or message URL.",
-                "I couldn't process the announcement request. Please use a valid schedule message ID.",
+                "I couldn't process the announcement request. Please use a valid session message ID.",
             )
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
@@ -827,34 +867,31 @@ class ScheduleCommands:
             return await self._send_private_organizer_message(
                 ctx,
                 f"❌ {error}",
-                "I couldn't process the announcement request. Check the schedule ID and your permissions.",
+                "I couldn't process the announcement request. Check the session ID and your permissions.",
             )
         await self._send_private_organizer_message(
             ctx,
-            "✅ The schedule announcement action was processed.",
-            "The schedule announcement action was processed.",
+            "✅ The session announcement action was processed.",
+            "The session announcement action was processed.",
         )
 
-    # ``cancel`` is reserved by Red's command framework. Keep explicit
-    # schedule-prefixed names for slash/prefix registration and add the short
-    # aliases that Red permits.
-    @commands.hybrid_command(name="schedulereschedule", aliases=["reschedule", "resched"])
+    @lfg.command(name="reschedule", aliases=["resched", "move"])
     @commands.guild_only()
     @app_commands.describe(
-        message_id="The schedule message ID or its Discord message URL.",
+        message_id="The session message ID or its Discord message URL.",
         time_input="The new future start time, interpreted in the event timezone.",
     )
     async def reschedule(
         self, ctx: commands.Context, message_id: str, time_input: str
     ):
-        """Change an active schedule's start time."""
+        """Change an active session's start time."""
 
         message_id = normalize_message_id(message_id)
         if message_id is None:
             return await self._send_private_organizer_message(
                 ctx,
                 "❌ Please provide a valid Discord message ID or message URL.",
-                "I couldn't process the reschedule request. Please use a valid schedule message ID or URL.",
+                "I couldn't process the reschedule request. Please use a valid session message ID or URL.",
             )
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
@@ -864,13 +901,13 @@ class ScheduleCommands:
             return await self._send_private_organizer_message(
                 ctx,
                 f"❌ {error}",
-                "I couldn't process the reschedule request. Check the schedule ID and your permissions.",
+                "I couldn't process the reschedule request. Check the session ID and your permissions.",
             )
         if self._event_status(event_data) != "active":
             return await self._send_private_organizer_message(
                 ctx,
-                f"❌ This schedule is already {self._event_status(event_data)} and cannot be rescheduled.",
-                "I couldn't reschedule that schedule because it is no longer active.",
+                f"❌ This session is already {self._event_status(event_data)} and cannot be rescheduled.",
+                "I couldn't reschedule that session because it is no longer active.",
             )
 
         used_default_timezone = False
@@ -884,8 +921,8 @@ class ScheduleCommands:
                 timezone_name, used_default_timezone = await self._member_timezone(ctx.author)
 
         try:
-            unix_timestamp, _ = parse_schedule_time(time_input, timezone_name)
-        except ScheduleTimeError as exc:
+            unix_timestamp, _ = parse_session_time(time_input, timezone_name)
+        except LFGTimeError as exc:
             default_note = (
                 f" The default timezone `{DEFAULT_TIMEZONE}` was used because no valid personal/event timezone was available."
                 if used_default_timezone
@@ -894,7 +931,7 @@ class ScheduleCommands:
             return await self._send_private_organizer_message(
                 ctx,
                 f"❌ {exc}{default_note}",
-                "I couldn't parse the new schedule time. Check the event timezone and time format.",
+                "I couldn't parse the new session time. Check the event timezone and time format.",
             )
 
         # Re-read and authorize under the lock so a concurrent cancel or finish
@@ -906,7 +943,7 @@ class ScheduleCommands:
             async with self.config.guild(ctx.guild).scheduled_events() as events:
                 current = events.get(str(message_id))
                 if not isinstance(current, dict):
-                    update_error = "I couldn't find a schedule with that message ID."
+                    update_error = "I couldn't find a session with that message ID."
                 elif not (
                     self._same_id(current.get("organizer_id"), ctx.author.id)
                     or self._has_manage_guild(ctx.author)
@@ -914,7 +951,7 @@ class ScheduleCommands:
                     update_error = "Only the event organizer or a member with Manage Server can do that."
                 elif self._event_status(current) != "active":
                     update_error = (
-                        f"This schedule is already {self._event_status(current)} and cannot be rescheduled."
+                        f"This session is already {self._event_status(current)} and cannot be rescheduled."
                     )
                 else:
                     updated = self._event_copy(current)
@@ -932,7 +969,7 @@ class ScheduleCommands:
             return await self._send_private_organizer_message(
                 ctx,
                 f"❌ {update_error}",
-                "I couldn't save the reschedule. Check the schedule ID and its status.",
+                "I couldn't save the reschedule. Check the session ID and its status.",
             )
         update_note = "" if message_updated else " The event was saved, but I couldn't update its Discord message."
         timezone_note = (
@@ -942,8 +979,8 @@ class ScheduleCommands:
         )
         await self._send_private_organizer_message(
             ctx,
-            f"✅ Schedule **{updated.get('game_title', 'Game session')}** rescheduled for <t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>).{timezone_note}{update_note}",
-            "The schedule was rescheduled, but I couldn't DM the private confirmation.",
+            f"✅ Session **{updated.get('game_title', 'Game session')}** rescheduled for <t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>).{timezone_note}{update_note}",
+            "The session was rescheduled, but I couldn't DM the private confirmation.",
         )
 
     async def _change_event_status(
@@ -952,10 +989,15 @@ class ScheduleCommands:
         """Persist cancellation/completion and then refresh the message."""
 
         async with self._event_mutation_lock(ctx.guild.id):
+            exp_settings = (
+                await self._exp_settings(ctx.guild)
+                if new_status == "finished"
+                else None
+            )
             async with self.config.guild(ctx.guild).scheduled_events() as events:
                 current = events.get(str(message_id))
                 if not isinstance(current, dict):
-                    return None, "I couldn't find a schedule with that message ID.", False
+                    return None, "I couldn't find a session with that message ID.", False
                 if not (
                     self._same_id(current.get("organizer_id"), ctx.author.id)
                     or self._has_manage_guild(ctx.author)
@@ -967,28 +1009,38 @@ class ScheduleCommands:
                     )
                 old_status = self._event_status(current)
                 if old_status != "active":
-                    return None, f"This schedule is already {old_status}.", False
+                    return None, f"This session is already {old_status}.", False
                 updated = self._event_copy(current)
                 updated["status"] = new_status
                 updated["status_timestamp"] = int(datetime.now(timezone.utc).timestamp())
+                if exp_settings is not None:
+                    # Save the award intent with the status change. A restart
+                    # after this transaction can resume the payout safely.
+                    updated["exp_award_pending"] = exp_settings["enabled"]
+                    if exp_settings["enabled"]:
+                        updated["exp_award_settings"] = {
+                            "per_session": exp_settings["per_session"],
+                            "organizer_bonus": exp_settings["organizer_bonus"],
+                            "min_attendees": exp_settings["min_attendees"],
+                        }
                 events[str(message_id)] = updated
             message_updated = await self._update_event_message(
                 ctx.guild, message_id, updated
             )
             return updated, None, message_updated
 
-    @commands.hybrid_command(name="schedulecancel")
+    @lfg.command(name="cancel")
     @commands.guild_only()
-    @app_commands.describe(message_id="The schedule message ID or its Discord message URL.")
+    @app_commands.describe(message_id="The session message ID or its Discord message URL.")
     async def cancel(self, ctx: commands.Context, message_id: str):
-        """Cancel an active schedule."""
+        """Cancel an active session."""
 
         message_id = normalize_message_id(message_id)
         if message_id is None:
             return await self._send_private_organizer_message(
                 ctx,
                 "❌ Please provide a valid Discord message ID or message URL.",
-                "I couldn't process the cancellation request. Please use a valid schedule message ID or URL.",
+                "I couldn't process the cancellation request. Please use a valid session message ID or URL.",
             )
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
@@ -999,50 +1051,94 @@ class ScheduleCommands:
             return await self._send_private_organizer_message(
                 ctx,
                 f"❌ {error}",
-                "I couldn't process the cancellation request. Check the schedule ID and your permissions.",
+                "I couldn't process the cancellation request. Check the session ID and your permissions.",
             )
         update_note = "" if message_updated else " The event was saved, but its message could not be updated."
         await self._send_private_organizer_message(
             ctx,
-            f"✅ Schedule **{event_data.get('game_title', 'Game session')}** cancelled.{update_note}",
-            "The schedule was cancelled, but I couldn't DM the private confirmation.",
+            f"✅ Session **{event_data.get('game_title', 'Game session')}** cancelled.{update_note}",
+            "The session was cancelled, but I couldn't DM the private confirmation.",
         )
 
-    @commands.hybrid_command(name="schedulefinish", aliases=["finish"])
+    @lfg.command(name="finish", aliases=["end", "complete"])
     @commands.guild_only()
-    @app_commands.describe(message_id="The schedule message ID or its Discord message URL.")
+    @app_commands.describe(message_id="The session message ID or its Discord message URL.")
     async def finish(self, ctx: commands.Context, message_id: str):
-        """Mark an active schedule as finished."""
+        """Mark an active session as finished."""
 
         message_id = normalize_message_id(message_id)
         if message_id is None:
             return await self._send_private_organizer_message(
                 ctx,
                 "❌ Please provide a valid Discord message ID or message URL.",
-                "I couldn't process the finish request. Please use a valid schedule message ID or URL.",
+                "I couldn't process the finish request. Please use a valid session message ID or URL.",
             )
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
         event_data, error, message_updated = await self._change_event_status(
             ctx, message_id, "finished"
         )
+        resumed_award = False
+        if error == "This session is already finished.":
+            # A prior finish may have committed the status before the EXP
+            # payout completed. Retry only that persisted pending payout.
+            pending_event, pending_error = await self._load_authorized_event(
+                ctx, message_id
+            )
+            if (
+                pending_error is None
+                and self._event_status(pending_event) == "finished"
+                and pending_event.get("exp_award_pending")
+                and not pending_event.get("exp_awarded")
+            ):
+                event_data = pending_event
+                error = None
+                message_updated = True
+                resumed_award = True
         if error:
             return await self._send_private_organizer_message(
                 ctx,
                 f"❌ {error}",
-                "I couldn't process the finish request. Check the schedule ID and your permissions.",
+                "I couldn't process the finish request. Check the session ID and your permissions.",
             )
+        # Award session EXP only after the active -> finished transition has
+        # been persisted by the once-only status guard above.
+        award = await self._award_event_exp(ctx.guild, message_id)
+        exp_note = ""
+        if award.get("enabled"):
+            if award.get("eligible", True):
+                exp_note = (
+                    f" Session EXP was awarded to {award['awarded']} participant(s)."
+                )
+                if award.get("warnings"):
+                    unique_warnings = list(dict.fromkeys(award["warnings"]))
+                    exp_note += " " + " ".join(unique_warnings)
+            else:
+                exp_note = (
+                    " No EXP was awarded because this session had fewer than "
+                    f"{award.get('min_attendees', 2)} unique participants."
+                )
         update_note = "" if message_updated else " The event was saved, but its message could not be updated."
+        if resumed_award:
+            confirmation = (
+                f"✅ Session **{event_data.get('game_title', 'Game session')}** was already finished."
+                f" The pending EXP payout was retried.{exp_note}"
+            )
+        else:
+            confirmation = (
+                f"✅ Session **{event_data.get('game_title', 'Game session')}** marked finished."
+                f"{update_note}{exp_note}"
+            )
         await self._send_private_organizer_message(
             ctx,
-            f"✅ Schedule **{event_data.get('game_title', 'Game session')}** marked finished.{update_note}",
-            "The schedule was marked finished, but I couldn't DM the private confirmation.",
+            confirmation,
+            "The session was marked finished, but I couldn't DM the private confirmation.",
         )
 
-    @commands.hybrid_command(name="upcoming", aliases=["schedulelist", "upcomingschedules"])
+    @lfg.command(name="upcoming", aliases=["list", "sessions"])
     @commands.guild_only()
     async def upcoming(self, ctx: commands.Context):
-        """List active schedules whose start time is still in the future."""
+        """List active sessions whose start time is still in the future."""
 
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
@@ -1075,7 +1171,7 @@ class ScheduleCommands:
         candidates = candidates[:MAX_UPCOMING_EVENTS]
 
         if not candidates:
-            return await ctx.send("There are no upcoming active schedules.", ephemeral=True)
+            return await ctx.send("There are no upcoming active sessions.", ephemeral=True)
 
         lines = []
         for start_timestamp, message_id, event_data in candidates:
@@ -1096,7 +1192,7 @@ class ScheduleCommands:
             )
 
         embed = discord.Embed(
-            title="Upcoming game schedules",
+            title="Upcoming play sessions",
             description="\n\n".join(lines)[:4096],
             color=discord.Color.blue(),
         )
