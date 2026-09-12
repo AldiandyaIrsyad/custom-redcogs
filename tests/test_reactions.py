@@ -89,6 +89,33 @@ async def test_manual_share_completes_without_nested_config_deadlock(cog):
     assert stored["last_shared_timestamp"] > 0
 
 
+async def test_share_helper_returns_true_after_persisting_success(cog):
+    data = event()
+    guild, _, message, users, share = await prepare(cog, data)
+
+    result = await cog._share_schedule(guild, users[1], message, data)
+
+    assert result is True
+    share.send.assert_awaited_once()
+    assert (await cog.config.guild(guild).scheduled_events())["100"][
+        "last_shared_timestamp"
+    ] > 0
+
+
+async def test_share_helper_returns_false_when_announcement_fails(cog):
+    data = event()
+    guild, _, message, users, share = await prepare(cog, data)
+    share.send.side_effect = discord.Forbidden(Mock(), "forbidden")
+
+    result = await cog._share_schedule(guild, users[2], message, data)
+
+    assert result is False
+    assert (await cog.config.guild(guild).scheduled_events())["100"][
+        "last_shared_timestamp"
+    ] == 0
+    users[2].send.assert_awaited_once()
+
+
 async def test_cancelled_event_is_closed(cog):
     guild, _, _, _, share = await prepare(cog, event(status="cancelled"))
     await cog._handle_reaction(payload(), "add")
@@ -125,8 +152,8 @@ async def test_concurrent_reminder_reactions_send_only_one_reminder(cog):
 
 async def test_share_attribution_is_organizer_and_cooldown_is_persisted(cog):
     _, _, _, _, share = await prepare(cog, event())
+    await cog._handle_reaction(payload(1, "📢"), "add")
     await cog._handle_reaction(payload(2, "📢"), "add")
-    await cog._handle_reaction(payload(3, "📢"), "add")
     share.send.assert_awaited_once()
     embed = share.send.await_args.kwargs["embed"]
     assert "**Organizer**: <@1>" in embed.description
@@ -137,7 +164,7 @@ async def test_share_suppresses_mentions_from_event_content(cog):
         cog, event(game_title="@everyone <@&123>", description="@everyone")
     )
 
-    await cog._handle_reaction(payload(2, "📢"), "add")
+    await cog._handle_reaction(payload(1, "📢"), "add")
 
     allowed_mentions = share.send.await_args.kwargs["allowed_mentions"]
     assert allowed_mentions.everyone is False
@@ -147,14 +174,50 @@ async def test_share_suppresses_mentions_from_event_content(cog):
 
 
 async def test_concurrent_share_reactions_consume_only_one_cooldown(cog):
-    guild, _, _, _, share = await prepare(cog, event())
+    guild, _, _, users, share = await prepare(cog, event())
+    users[2].guild_permissions = SimpleNamespace(
+        manage_guild=True, administrator=False
+    )
 
     await asyncio.gather(
+        cog._handle_reaction(payload(1, "📢"), "add"),
         cog._handle_reaction(payload(2, "📢"), "add"),
-        cog._handle_reaction(payload(3, "📢"), "add"),
     )
 
     share.send.assert_awaited_once()
+    assert (await cog.config.guild(guild).scheduled_events())["100"][
+        "last_shared_timestamp"
+    ] > 0
+
+
+async def test_private_control_reactions_are_rejected_on_new_cards(cog):
+    guild, channel, message, users, share = await prepare(
+        cog, event(private_controls=True)
+    )
+    # Manage Server members are subject to the same private-control boundary
+    # as the organizer on cards created by the current version.
+    users[2].guild_permissions = SimpleNamespace(manage_guild=True)
+
+    for uid in (1, 2):
+        for emoji in ("❗", "📢"):
+            await cog._handle_reaction(payload(uid, emoji), "add")
+
+    channel.send.assert_not_awaited()
+    share.send.assert_not_awaited()
+    assert message.remove_reaction.await_count == 4
+
+
+async def test_legacy_share_reaction_allows_organizer_or_admin_only(cog):
+    guild, _, message, users, share = await prepare(cog, event())
+    users[2].guild_permissions = SimpleNamespace(
+        manage_guild=True, administrator=False
+    )
+
+    await cog._handle_reaction(payload(2, "📢"), "add")
+    await cog._handle_reaction(payload(3, "📢"), "add")
+
+    share.send.assert_awaited_once()
+    assert message.remove_reaction.await_count == 2
     assert (await cog.config.guild(guild).scheduled_events())["100"][
         "last_shared_timestamp"
     ] > 0

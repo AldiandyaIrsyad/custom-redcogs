@@ -101,7 +101,9 @@ async def test_concurrent_lifecycle_changes_allow_only_one_transition(cog):
 async def test_reschedule_handles_event_removed_after_initial_authorization(cog):
     guild = SimpleNamespace(id=5)
     author = SimpleNamespace(
-        id=1, guild_permissions=SimpleNamespace(manage_guild=False)
+        id=1,
+        send=AsyncMock(),
+        guild_permissions=SimpleNamespace(manage_guild=False),
     )
     ctx = SimpleNamespace(
         guild=guild,
@@ -115,7 +117,9 @@ async def test_reschedule_handles_event_removed_after_initial_authorization(cog)
 
     await cog.reschedule.callback(cog, ctx, "100", "in 10 minutes")
 
-    assert "couldn't find" in ctx.send.await_args.args[0]
+    author.send.assert_awaited_once()
+    assert "couldn't find" in author.send.await_args.args[0]
+    ctx.send.assert_not_awaited()
     assert await cog.config.guild(guild).scheduled_events() == {}
 
 
@@ -140,6 +144,204 @@ async def test_private_actions_reject_unauthorized_and_cooldown_requests(cog):
     cog._share_schedule.assert_not_awaited()
 
 
+async def test_manual_share_reports_send_failure_and_success(cog):
+    guild = SimpleNamespace(id=5)
+    author = SimpleNamespace(id=1, guild_permissions=SimpleNamespace(manage_guild=False))
+    ctx = SimpleNamespace(guild=guild, author=author)
+    await cog.config.guild(guild).scheduled_events.set({"100": event()})
+    await cog.config.guild(guild).share_channel_id.set(20)
+    cog._fetch_event_message = AsyncMock(return_value=SimpleNamespace(id=100))
+    cog._share_schedule = AsyncMock(side_effect=[False, True])
+
+    _, error = await cog._run_organizer_action(ctx, 100, "share")
+    assert "couldn't post" in error
+    result, error = await cog._run_organizer_action(ctx, 100, "share")
+    assert error is None
+    assert result is not None
+    assert all(
+        call.kwargs["remove_reaction_after_action"] is False
+        for call in cog._share_schedule.await_args_list
+    )
+
+
+@pytest.mark.parametrize(
+    ("command_name", "arguments", "confirmation"),
+    [
+        ("reschedule", ("100", "in 10 minutes"), "rescheduled"),
+        ("cancel", ("100",), "cancelled"),
+        ("finish", ("100",), "marked finished"),
+    ],
+)
+async def test_prefix_lifecycle_success_is_private(cog, monkeypatch, command_name, arguments, confirmation):
+    if command_name == "reschedule":
+        import schedule.commands as schedule_commands
+
+        monkeypatch.setattr(
+            schedule_commands,
+            "parse_schedule_time",
+            lambda *args, **kwargs: (2000000000, None),
+        )
+
+    guild = SimpleNamespace(id=5)
+    author = SimpleNamespace(
+        id=1,
+        send=AsyncMock(),
+        guild_permissions=SimpleNamespace(manage_guild=False),
+    )
+    ctx = SimpleNamespace(
+        guild=guild,
+        author=author,
+        interaction=None,
+        send=AsyncMock(),
+    )
+    await cog.config.guild(guild).scheduled_events.set(
+        {"100": event(timezone="Asia/Jakarta")}
+    )
+    cog._update_event_message = AsyncMock(return_value=True)
+
+    await getattr(cog, command_name).callback(cog, ctx, *arguments)
+
+    author.send.assert_awaited_once()
+    assert confirmation in author.send.await_args.args[0]
+    ctx.send.assert_not_awaited()
+
+
+async def test_prefix_lifecycle_uses_public_fallback_when_dm_fails(cog):
+    guild = SimpleNamespace(id=5)
+    author = SimpleNamespace(
+        id=1,
+        send=AsyncMock(side_effect=discord.Forbidden(Mock(), "forbidden")),
+        guild_permissions=SimpleNamespace(manage_guild=False),
+    )
+    ctx = SimpleNamespace(
+        guild=guild,
+        author=author,
+        interaction=None,
+        send=AsyncMock(),
+    )
+    await cog.config.guild(guild).scheduled_events.set(
+        {"100": event(timezone="Asia/Jakarta")}
+    )
+    cog._update_event_message = AsyncMock(return_value=True)
+
+    await cog.cancel.callback(cog, ctx, "100")
+
+    author.send.assert_awaited_once()
+    ctx.send.assert_awaited_once()
+    assert ctx.send.await_args.args[0] == (
+        "The schedule was cancelled, but I couldn't DM the private confirmation."
+    )
+    allowed_mentions = ctx.send.await_args.kwargs["allowed_mentions"]
+    assert allowed_mentions.everyone is False
+    assert allowed_mentions.roles is False
+    assert allowed_mentions.users is False
+    assert allowed_mentions.replied_user is False
+
+
+@pytest.mark.parametrize(
+    ("command_name", "arguments"),
+    [
+        ("reschedule", ("invalid", "in 10 minutes")),
+        ("cancel", ("invalid",)),
+        ("finish", ("invalid",)),
+    ],
+)
+async def test_prefix_lifecycle_error_is_private(cog, command_name, arguments):
+    guild = SimpleNamespace(id=5)
+    author = SimpleNamespace(
+        id=1,
+        send=AsyncMock(),
+        guild_permissions=SimpleNamespace(manage_guild=False),
+    )
+    ctx = SimpleNamespace(
+        guild=guild,
+        author=author,
+        interaction=None,
+        send=AsyncMock(),
+    )
+
+    await getattr(cog, command_name).callback(cog, ctx, *arguments)
+
+    author.send.assert_awaited_once()
+    assert "valid" in author.send.await_args.args[0]
+    ctx.send.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("command_name", "arguments", "confirmation"),
+    [
+        ("reschedule", ("100", "in 10 minutes"), "rescheduled"),
+        ("cancel", ("100",), "cancelled"),
+        ("finish", ("100",), "marked finished"),
+    ],
+)
+async def test_slash_lifecycle_success_is_ephemeral(cog, monkeypatch, command_name, arguments, confirmation):
+    if command_name == "reschedule":
+        import schedule.commands as schedule_commands
+
+        monkeypatch.setattr(
+            schedule_commands,
+            "parse_schedule_time",
+            lambda *args, **kwargs: (2000000000, None),
+        )
+
+    guild = SimpleNamespace(id=5)
+    author = SimpleNamespace(
+        id=1,
+        send=AsyncMock(),
+        guild_permissions=SimpleNamespace(manage_guild=False),
+    )
+    ctx = SimpleNamespace(
+        guild=guild,
+        author=author,
+        interaction=object(),
+        defer=AsyncMock(),
+        send=AsyncMock(),
+    )
+    await cog.config.guild(guild).scheduled_events.set(
+        {"100": event(timezone="Asia/Jakarta")}
+    )
+    cog._update_event_message = AsyncMock(return_value=True)
+
+    await getattr(cog, command_name).callback(cog, ctx, *arguments)
+
+    ctx.defer.assert_awaited_once_with(ephemeral=True)
+    ctx.send.assert_awaited_once()
+    assert confirmation in ctx.send.await_args.args[0]
+    assert ctx.send.await_args.kwargs["ephemeral"] is True
+    author.send.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("command_name", "arguments"),
+    [
+        ("reschedule", ("invalid", "in 10 minutes")),
+        ("cancel", ("invalid",)),
+        ("finish", ("invalid",)),
+    ],
+)
+async def test_slash_lifecycle_error_is_ephemeral(cog, command_name, arguments):
+    guild = SimpleNamespace(id=5)
+    author = SimpleNamespace(
+        id=1,
+        send=AsyncMock(),
+        guild_permissions=SimpleNamespace(manage_guild=False),
+    )
+    ctx = SimpleNamespace(
+        guild=guild,
+        author=author,
+        interaction=object(),
+        send=AsyncMock(),
+    )
+
+    await getattr(cog, command_name).callback(cog, ctx, *arguments)
+
+    ctx.send.assert_awaited_once()
+    assert "valid" in ctx.send.await_args.args[0]
+    assert ctx.send.await_args.kwargs["ephemeral"] is True
+    author.send.assert_not_awaited()
+
+
 async def test_private_reminder_rejects_outside_window(cog):
     guild = SimpleNamespace(id=5)
     author = SimpleNamespace(id=1, guild_permissions=SimpleNamespace(manage_guild=False))
@@ -160,6 +362,42 @@ def test_public_embed_does_not_advertise_organizer_controls(cog):
     assert "❗" not in embed.footer.text
     assert "📢" not in embed.footer.text
     assert embed.footer.text == "✅ Join/Leave"
+
+
+def test_thread_permission_preflight_uses_send_messages_in_threads(cog):
+    permissions = SimpleNamespace(
+        view_channel=True,
+        read_message_history=True,
+        send_messages=True,
+        send_messages_in_threads=False,
+        embed_links=True,
+        add_reactions=True,
+        manage_messages=True,
+    )
+    ctx = SimpleNamespace(
+        channel=SimpleNamespace(permissions_for=lambda member: permissions),
+        guild=SimpleNamespace(me=object()),
+    )
+
+    assert ScheduleCommands._missing_bot_permissions(ctx) == [
+        "Send Messages in Threads"
+    ]
+
+    permissions.send_messages = False
+    permissions.send_messages_in_threads = True
+    assert ScheduleCommands._missing_bot_permissions(ctx) == []
+
+
+async def test_public_event_edit_suppresses_mentions(cog):
+    message = SimpleNamespace(edit=AsyncMock(), guild=None)
+
+    await cog._update_embed(message, event())
+
+    allowed_mentions = message.edit.await_args.kwargs["allowed_mentions"]
+    assert allowed_mentions.everyone is False
+    assert allowed_mentions.roles is False
+    assert allowed_mentions.users is False
+    assert allowed_mentions.replied_user is False
 
 
 async def test_prefix_schedule_organizer_controls_are_sent_by_dm(cog, monkeypatch):
@@ -207,6 +445,11 @@ async def test_prefix_schedule_organizer_controls_are_sent_by_dm(cog, monkeypatc
 
     await cog.schedule.callback(cog, ctx, 2, "tomorrow at 8pm")
 
+    allowed_mentions = channel.send.await_args.kwargs["allowed_mentions"]
+    assert allowed_mentions.everyone is False
+    assert allowed_mentions.roles is False
+    assert allowed_mentions.users is False
+    assert allowed_mentions.replied_user is False
     channel.send.return_value.add_reaction.assert_awaited_once_with("✅")
     author.send.assert_awaited_once()
     assert "scheduleremind" in author.send.await_args.args[0]

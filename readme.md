@@ -79,11 +79,13 @@ After `[p]schedule` succeeds, the cog creates two surfaces:
 - The public schedule card shows the event and only the `✅` join or leave reaction. The organizer counts toward capacity and cannot leave by removing their reaction.
 - The private organizer message contains commands for reminder, sharing, rescheduling, cancellation, and completion. Slash-command creation returns this information ephemerally. Prefix-command creation sends it by DM. Run `[p]schedulecontrol <message-id-or-url>` to receive it again.
 
+Organizer command results are also private: ephemeral for slash commands and DM for prefix commands. If the bot cannot DM you, it sends a brief recovery note in the thread.
+
 `[p]scheduleremind` works only during the 30 minutes before the start. It posts a reminder in the event thread and attempts a DM to every attendee. A schedule accepts at most one reminder per hour. A member with DMs disabled may not receive the DM, but the other deliveries still proceed.
 
-`[p]scheduleshare` posts the current event snapshot to the configured share channel and has a one-hour per-event cooldown. The announcement links back to the original thread, so use that link for the current participant list and status. The cog also posts an automatic announcement when the share channel is configured.
+`[p]scheduleshare` posts the current event snapshot to the configured share channel and has a one-hour per-event cooldown. The announcement links back to the original thread, so use that link for the current participant list and status. The cog also attempts an automatic announcement when the share channel is configured.
 
-The lobby includes the organizer. When it is full, a new `✅` reaction is removed and the member is told that no slot is available. New joins are also rejected after the start time. Cancelled and finished events remain visible but no longer accept joins, reminders, or shares. Deleting the schedule message or its forum post removes its matching stored event.
+The lobby includes the organizer. When it is full, a new `✅` reaction is removed and the cog attempts to DM the member that no slot is available. New joins are also rejected after the start time. Cancelled and finished events remain visible but no longer accept joins, reminders, or shares. Deleting the schedule message or its forum post removes its matching stored event.
 
 ## Timezones and time input
 
@@ -97,7 +99,7 @@ Examples of accepted input include:
 [p]schedule 5 "2026-09-20 19:30" "Tournament"
 ```
 
-The time must resolve to the future. Relative durations such as `in 2 hours` represent elapsed time. A reschedule interprets the new time in the event's saved timezone, so changing your personal timezone does not silently move an existing event.
+The time must resolve to the future. Relative durations such as `in 2 hours` represent elapsed time. A reschedule interprets the new time in the event's saved timezone, so changing your personal timezone does not silently move an existing event. Older records without a saved timezone fall back to the acting member's timezone or the server default.
 
 Every event uses Discord's timestamp markup. Discord renders the same event in each viewer's local timezone, while the confirmation identifies the timezone used to parse the input. A local time that falls in a daylight-saving gap or repeated hour is rejected unless the input makes the offset unambiguous. Choose another local time or include an explicit UTC offset when appropriate.
 
@@ -114,7 +116,7 @@ The bot needs the following permissions in the designated forum and its threads:
 | Add Reactions | Add the public `✅` attendance control and restore the organizer's reaction when needed. |
 | Manage Messages | Remove a rejected full-lobby reaction and clean up legacy organizer reactions. |
 
-The configured announcement text channel needs View Channel, Send Messages, and Embed Links. Members need access to the forum thread and permission to add reactions. Reaction events must be enabled for the Red bot so the cog can receive join and leave actions.
+The configured announcement text channel needs View Channel, Send Messages, and Embed Links. Members need access to the forum thread; the bot pre-adds `✅`, so members can select it even if they cannot add a new reaction. Reaction events must be enabled for the Red bot so the cog can receive join and leave actions.
 
 If a required forum permission is missing, the cog reports it before creating a schedule. If a permission changes after creation, the event data may remain saved while message edits, reactions, or announcements fail until the permission is restored.
 
@@ -123,7 +125,7 @@ If a required forum permission is missing, the cog reports it before creating a 
 The cog stores its state with Red Config. Per-member data is the saved timezone. Per-server data includes the configured forum and share-channel IDs and event records keyed by schedule message ID. An event record can contain:
 
 - organizer and attendee Discord user IDs;
-- forum channel and schedule message IDs;
+- the forum thread ID, with the schedule message ID as the record key;
 - title, description, forum tags, player limit, and start timestamp;
 - the timezone used to parse the event and whether the default was used;
 - active, cancelled, or finished status; and reminder/share timestamps used for cooldowns.

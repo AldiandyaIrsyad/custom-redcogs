@@ -386,7 +386,7 @@ class ScheduleCommands:
         required = {
             "view_channel": "View Channel",
             "read_message_history": "Read Message History",
-            "send_messages": "Send Messages",
+            "send_messages_in_threads": "Send Messages in Threads",
             "embed_links": "Embed Links",
             "add_reactions": "Add Reactions",
             "manage_messages": "Manage Messages",
@@ -575,7 +575,10 @@ class ScheduleCommands:
 
         try:
             embed = self._build_embed(event_data, ctx.author.mention)
-            msg = await ctx.channel.send(embed=embed)
+            msg = await ctx.channel.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         except discord.Forbidden:
             return await ctx.send(
                 "❌ I don't have permission to post the schedule in this thread.",
@@ -726,15 +729,17 @@ class ScheduleCommands:
                 if last_shared and now - last_shared < 3600:
                     remaining = max(1, (3600 - (now - last_shared) + 59) // 60)
                     return None, f"This schedule was shared recently. Try again in about {remaining} minute(s)."
-                await self._share_schedule(
+                shared = await self._share_schedule(
                     ctx.guild,
                     ctx.author,
                     message,
                     event_data,
-                    # This is a manual action. Enforce the per-event cooldown;
-                    # removing a legacy reaction is harmless when none exists.
-                    remove_reaction_after_action=True,
+                    # This command already checked the cooldown and provides
+                    # its own private result, without a legacy reaction or DM.
+                    remove_reaction_after_action=False,
                 )
+                if not shared:
+                    return None, "I couldn't post the announcement. Ask an admin to check the share channel and my permissions."
             return event_data, None
 
     @commands.hybrid_command(name="schedulecontrol", aliases=["controls"])
@@ -846,20 +851,26 @@ class ScheduleCommands:
 
         message_id = normalize_message_id(message_id)
         if message_id is None:
-            return await ctx.send(
+            return await self._send_private_organizer_message(
+                ctx,
                 "❌ Please provide a valid Discord message ID or message URL.",
-                ephemeral=True,
+                "I couldn't process the reschedule request. Please use a valid schedule message ID or URL.",
             )
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
 
         event_data, error = await self._load_authorized_event(ctx, message_id)
         if error:
-            return await ctx.send(f"❌ {error}", ephemeral=True)
+            return await self._send_private_organizer_message(
+                ctx,
+                f"❌ {error}",
+                "I couldn't process the reschedule request. Check the schedule ID and your permissions.",
+            )
         if self._event_status(event_data) != "active":
-            return await ctx.send(
+            return await self._send_private_organizer_message(
+                ctx,
                 f"❌ This schedule is already {self._event_status(event_data)} and cannot be rescheduled.",
-                ephemeral=True,
+                "I couldn't reschedule that schedule because it is no longer active.",
             )
 
         used_default_timezone = False
@@ -880,10 +891,10 @@ class ScheduleCommands:
                 if used_default_timezone
                 else ""
             )
-            return await ctx.send(
+            return await self._send_private_organizer_message(
+                ctx,
                 f"❌ {exc}{default_note}",
-                ephemeral=True,
-                allowed_mentions=discord.AllowedMentions.none(),
+                "I couldn't parse the new schedule time. Check the event timezone and time format.",
             )
 
         # Re-read and authorize under the lock so a concurrent cancel or finish
@@ -918,17 +929,21 @@ class ScheduleCommands:
                 )
 
         if update_error:
-            return await ctx.send(f"❌ {update_error}", ephemeral=True)
+            return await self._send_private_organizer_message(
+                ctx,
+                f"❌ {update_error}",
+                "I couldn't save the reschedule. Check the schedule ID and its status.",
+            )
         update_note = "" if message_updated else " The event was saved, but I couldn't update its Discord message."
         timezone_note = (
             f" The default timezone `{DEFAULT_TIMEZONE}` was used."
             if used_default_timezone
             else f" Parsed in `{timezone_name}`."
         )
-        await ctx.send(
+        await self._send_private_organizer_message(
+            ctx,
             f"✅ Schedule **{updated.get('game_title', 'Game session')}** rescheduled for <t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>).{timezone_note}{update_note}",
-            ephemeral=True,
-            allowed_mentions=discord.AllowedMentions.none(),
+            "The schedule was rescheduled, but I couldn't DM the private confirmation.",
         )
 
     async def _change_event_status(
@@ -970,9 +985,10 @@ class ScheduleCommands:
 
         message_id = normalize_message_id(message_id)
         if message_id is None:
-            return await ctx.send(
+            return await self._send_private_organizer_message(
+                ctx,
                 "❌ Please provide a valid Discord message ID or message URL.",
-                ephemeral=True,
+                "I couldn't process the cancellation request. Please use a valid schedule message ID or URL.",
             )
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
@@ -980,12 +996,16 @@ class ScheduleCommands:
             ctx, message_id, "cancelled"
         )
         if error:
-            return await ctx.send(f"❌ {error}", ephemeral=True)
+            return await self._send_private_organizer_message(
+                ctx,
+                f"❌ {error}",
+                "I couldn't process the cancellation request. Check the schedule ID and your permissions.",
+            )
         update_note = "" if message_updated else " The event was saved, but its message could not be updated."
-        await ctx.send(
+        await self._send_private_organizer_message(
+            ctx,
             f"✅ Schedule **{event_data.get('game_title', 'Game session')}** cancelled.{update_note}",
-            ephemeral=True,
-            allowed_mentions=discord.AllowedMentions.none(),
+            "The schedule was cancelled, but I couldn't DM the private confirmation.",
         )
 
     @commands.hybrid_command(name="schedulefinish", aliases=["finish"])
@@ -996,9 +1016,10 @@ class ScheduleCommands:
 
         message_id = normalize_message_id(message_id)
         if message_id is None:
-            return await ctx.send(
+            return await self._send_private_organizer_message(
+                ctx,
                 "❌ Please provide a valid Discord message ID or message URL.",
-                ephemeral=True,
+                "I couldn't process the finish request. Please use a valid schedule message ID or URL.",
             )
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
@@ -1006,12 +1027,16 @@ class ScheduleCommands:
             ctx, message_id, "finished"
         )
         if error:
-            return await ctx.send(f"❌ {error}", ephemeral=True)
+            return await self._send_private_organizer_message(
+                ctx,
+                f"❌ {error}",
+                "I couldn't process the finish request. Check the schedule ID and your permissions.",
+            )
         update_note = "" if message_updated else " The event was saved, but its message could not be updated."
-        await ctx.send(
+        await self._send_private_organizer_message(
+            ctx,
             f"✅ Schedule **{event_data.get('game_title', 'Game session')}** marked finished.{update_note}",
-            ephemeral=True,
-            allowed_mentions=discord.AllowedMentions.none(),
+            "The schedule was marked finished, but I couldn't DM the private confirmation.",
         )
 
     @commands.hybrid_command(name="upcoming", aliases=["schedulelist", "upcomingschedules"])
@@ -1066,7 +1091,7 @@ class ScheduleCommands:
             )
             title_text = f"[{safe_title}]({jump_url})" if jump_url else safe_title
             lines.append(
-                f"**{title_text}** — <t:{start_timestamp}:F> (<t:{start_timestamp}:R>)\n"
+                f"**{title_text}**: <t:{start_timestamp}:F> (<t:{start_timestamp}:R>)\n"
                 f"Organizer: {organizer} • {len(event_data.get('attendees', []))}/{event_data.get('player_limit', '?')} players"
             )
 

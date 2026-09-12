@@ -164,6 +164,13 @@ class ScheduleListeners:
                     await self._remove_reaction(message, payload.emoji, payload.user_id)
                 return
 
+            # New cards expose attendance only. Organizer actions are private
+            # commands, so reject manually added legacy control reactions even
+            # when the reacting member is the organizer or an administrator.
+            if event_data.get("private_controls") and emoji in {"❗", "📢"}:
+                await self._remove_reaction(message, payload.emoji, payload.user_id)
+                return
+
             # Once an event has started, the lobby is closed. Existing
             # attendees may still remove their reaction, but a new join would
             # create a misleading attendee list.
@@ -210,6 +217,15 @@ class ScheduleListeners:
                     guild, message, event_data, event_key, user, action, payload.emoji
                 )
             elif emoji == "📢" and action == "add":
+                # Legacy cards used a public share reaction. Preserve that
+                # behavior only for the organizer or a member with Manage
+                # Server; arbitrary attendees must not publish the event.
+                if not (
+                    self._same_id(payload.user_id, event_data.get("organizer_id"))
+                    or self._has_manage_guild(user)
+                ):
+                    await self._remove_reaction(message, payload.emoji, user)
+                    return
                 # _share_schedule is intentionally called inside the event
                 # lock. It does Config operations after its Discord HTTP call
                 # and does not acquire this lock again.

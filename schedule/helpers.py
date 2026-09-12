@@ -25,7 +25,7 @@ class ScheduleHelpers:
         original_schedule_message: discord.Message,
         event_data: dict,
         remove_reaction_after_action: bool = True,
-    ):
+    ) -> bool:
         """
         Share a schedule to the configured channel.
 
@@ -33,6 +33,9 @@ class ScheduleHelpers:
         that lock, and it does not keep a Config context open across Discord
         HTTP calls. The event's organizer is always used for attribution;
         ``user_who_triggered`` is only the person requesting the share.
+
+        Returns ``True`` only when the announcement is sent and its cooldown
+        timestamp is persisted. All rejected or failed paths return ``False``.
         """
         try:
             if self._event_status(event_data) != "active":
@@ -42,7 +45,7 @@ class ScheduleHelpers:
                         "This schedule is no longer active and cannot be shared.",
                         "send inactive-share DM",
                     )
-                return
+                return False
 
             share_channel_id = await self.config.guild(guild).share_channel_id()
             if not share_channel_id:
@@ -52,7 +55,7 @@ class ScheduleHelpers:
                         "The share channel has not been set up for this server. Please ask an admin to use `[p]scheduleset sharechannel`.",
                         "send missing-share-channel DM",
                     )
-                return
+                return False
 
             share_channel = await self._resolve_share_channel(guild, share_channel_id)
             if share_channel is None or not hasattr(share_channel, "send"):
@@ -62,7 +65,7 @@ class ScheduleHelpers:
                         "The configured share channel is invalid or no longer accessible. Please inform an admin.",
                         "send invalid-share-channel DM",
                     )
-                return
+                return False
 
             # Cooldown applies to manual reactions only. Automatic sharing at
             # creation time remains available to publish the initial event.
@@ -80,7 +83,7 @@ class ScheduleHelpers:
                         f"This schedule was shared recently. Please try again in about {minutes_remaining} minute(s).",
                         "send share cooldown DM",
                     )
-                return
+                return False
 
             share_embed = self._build_share_embed(
                 event_data, original_schedule_message
@@ -104,7 +107,7 @@ class ScheduleHelpers:
                         f"I don't have permission to send messages in {getattr(share_channel, 'mention', 'the share channel')}. Please inform an admin.",
                         "send share permission DM",
                     )
-                return
+                return False
             except discord.NotFound as exc:
                 self._log_http_error(
                     "share schedule",
@@ -119,7 +122,7 @@ class ScheduleHelpers:
                         "The configured share channel could not be found. Please inform an admin.",
                         "send share missing-channel DM",
                     )
-                return
+                return False
             except discord.HTTPException as exc:
                 self._log_http_error(
                     "share schedule",
@@ -134,7 +137,7 @@ class ScheduleHelpers:
                         "An error occurred while trying to share the schedule.",
                         "send share failure DM",
                     )
-                return
+                return False
 
             # No Config context is held while share_channel.send runs. Save
             # only after Discord accepted the share so failed sends don't
@@ -152,6 +155,7 @@ class ScheduleHelpers:
                     f"✅ Successfully shared '{self._event_title(event_data)}' to {getattr(share_channel, 'mention', 'the share channel')}!",
                     "send share confirmation DM",
                 )
+            return True
         except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
             # Covers channel resolution and any Discord API call that was not
             # handled at its narrow call site. Keep the listener alive.
@@ -168,6 +172,7 @@ class ScheduleHelpers:
                         "An error occurred while trying to share the schedule.",
                         "send share unexpected-failure DM",
                     )
+            return False
         except Exception as exc:
             self._log_exception(
                 "Unexpected error while sharing schedule",
@@ -182,6 +187,7 @@ class ScheduleHelpers:
                         "An error occurred while trying to share the schedule.",
                         "send share unexpected-failure DM",
                     )
+            return False
         finally:
             if remove_reaction_after_action:
                 await self._remove_reaction(
@@ -332,7 +338,10 @@ class ScheduleHelpers:
             organizer = get_member(organizer_id) if get_member is not None else None
             if organizer is not None:
                 organizer_mention = getattr(organizer, "mention", None)
-        await message.edit(embed=self._build_embed(event_data, organizer_mention))
+        await message.edit(
+            embed=self._build_embed(event_data, organizer_mention),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     async def _remove_reaction(self, message, emoji, user):
         if user is None:
