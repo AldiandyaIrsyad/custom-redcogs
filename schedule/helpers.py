@@ -316,7 +316,7 @@ class ScheduleHelpers:
             inline=False,
         )
         if status == "active":
-            footer = "✅ Join/Leave | Organizer: ❗ Remind (within 30 mins prior) | 📢 Share"
+            footer = "✅ Join/Leave"
         else:
             footer = f"{status.capitalize()} | Reactions are disabled for this schedule"
         new_embed.set_footer(text=self._truncate(footer, self.MAX_FOOTER_LENGTH))

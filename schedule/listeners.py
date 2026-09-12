@@ -136,6 +136,14 @@ class ScheduleListeners:
                 )
                 return
 
+            # Cards created by older versions exposed reminder/share reactions.
+            # Clear those controls the next time a member interacts with the
+            # card, while retaining the legacy handlers below for compatibility.
+            if emoji == "✅" and not event_data.get("private_controls"):
+                if await self._clear_legacy_control_reactions(message):
+                    event_data["private_controls"] = True
+                    await self._save_event(guild, event_key, event_data)
+
             if self._event_status(event_data) != "active":
                 # Completed and cancelled events remain visible for history,
                 # but their reactions must not mutate or notify anything.
@@ -199,6 +207,27 @@ class ScheduleListeners:
                     event_data,
                     remove_reaction_after_action=True,
                 )
+
+    async def _clear_legacy_control_reactions(self, message):
+        """Remove private-control reactions left by pre-separation cards."""
+
+        clear_reaction = getattr(message, "clear_reaction", None)
+        if not callable(clear_reaction):
+            return False
+        for emoji in ("❗", "📢"):
+            try:
+                await clear_reaction(emoji)
+            except discord.NotFound:
+                return False
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                self._log_http_error(
+                    "clear legacy schedule reaction",
+                    exc,
+                    message_id=getattr(message, "id", None),
+                    emoji=emoji,
+                )
+                return False
+        return True
 
     def _get_event_lock(self, guild_id: int):
         """Return the per-guild event lock supplied by the cog."""

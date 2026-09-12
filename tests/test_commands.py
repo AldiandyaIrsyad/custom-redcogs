@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import discord
 import pytest
@@ -98,6 +98,173 @@ async def test_concurrent_lifecycle_changes_allow_only_one_transition(cog):
     assert stored["status"] in {"cancelled", "finished"}
 
 
+async def test_reschedule_handles_event_removed_after_initial_authorization(cog):
+    guild = SimpleNamespace(id=5)
+    author = SimpleNamespace(
+        id=1, guild_permissions=SimpleNamespace(manage_guild=False)
+    )
+    ctx = SimpleNamespace(
+        guild=guild,
+        author=author,
+        interaction=None,
+        send=AsyncMock(),
+    )
+    authorized_event = event(timezone="Asia/Jakarta")
+    cog._load_authorized_event = AsyncMock(return_value=(authorized_event, None))
+    await cog.config.guild(guild).scheduled_events.set({})
+
+    await cog.reschedule.callback(cog, ctx, "100", "in 10 minutes")
+
+    assert "couldn't find" in ctx.send.await_args.args[0]
+    assert await cog.config.guild(guild).scheduled_events() == {}
+
+
+async def test_private_actions_reject_unauthorized_and_cooldown_requests(cog):
+    import time
+
+    guild = SimpleNamespace(id=5)
+    author = SimpleNamespace(id=2, guild_permissions=SimpleNamespace(manage_guild=False))
+    ctx = SimpleNamespace(guild=guild, author=author)
+    await cog.config.guild(guild).scheduled_events.set(
+        {"100": event(last_shared_timestamp=int(time.time()))}
+    )
+    await cog.config.guild(guild).share_channel_id.set(20)
+    cog._fetch_event_message = AsyncMock(return_value=SimpleNamespace(id=100))
+    cog._share_schedule = AsyncMock()
+
+    _, error = await cog._run_organizer_action(ctx, 100, "share")
+    assert "organizer" in error
+    author.id = 1
+    _, error = await cog._run_organizer_action(ctx, 100, "share")
+    assert "recently" in error
+    cog._share_schedule.assert_not_awaited()
+
+
+async def test_private_reminder_rejects_outside_window(cog):
+    guild = SimpleNamespace(id=5)
+    author = SimpleNamespace(id=1, guild_permissions=SimpleNamespace(manage_guild=False))
+    ctx = SimpleNamespace(guild=guild, author=author)
+    await cog.config.guild(guild).scheduled_events.set({"100": event()})
+    cog._fetch_event_message = AsyncMock(return_value=SimpleNamespace(id=100))
+    cog._handle_reminder = AsyncMock()
+
+    _, error = await cog._run_organizer_action(ctx, 100, "remind")
+
+    assert "30 minutes" in error
+    cog._handle_reminder.assert_not_awaited()
+
+
+def test_public_embed_does_not_advertise_organizer_controls(cog):
+    embed = cog._build_embed(event())
+
+    assert "❗" not in embed.footer.text
+    assert "📢" not in embed.footer.text
+    assert embed.footer.text == "✅ Join/Leave"
+
+
+async def test_prefix_schedule_organizer_controls_are_sent_by_dm(cog, monkeypatch):
+    import schedule.commands as schedule_commands
+
+    monkeypatch.setattr(
+        schedule_commands,
+        "parse_schedule_time",
+        lambda *args, **kwargs: (2000000000, None),
+    )
+    await cog.config.guild(SimpleNamespace(id=5)).target_forum_id.set(20)
+
+    # A Mock with a Thread spec satisfies the runtime channel check while
+    # retaining the small surface this command uses.
+    channel = Mock(spec=discord.Thread)
+    channel.id = 10
+    channel.parent_id = 20
+    channel.name = "Test thread"
+    channel.applied_tags = []
+    channel.send = AsyncMock(
+        return_value=SimpleNamespace(
+            id=100,
+            jump_url="https://discord.com/channels/5/10/100",
+            add_reaction=AsyncMock(),
+            delete=AsyncMock(),
+        )
+    )
+    guild = SimpleNamespace(id=5, me=None)
+    author = SimpleNamespace(
+        id=1,
+        mention="<@1>",
+        send=AsyncMock(),
+        guild_permissions=SimpleNamespace(manage_guild=False),
+    )
+    author.guild = guild
+    ctx = SimpleNamespace(
+        guild=guild,
+        channel=channel,
+        author=author,
+        bot=cog.bot,
+        interaction=None,
+        clean_prefix="!",
+        send=AsyncMock(),
+    )
+
+    await cog.schedule.callback(cog, ctx, 2, "tomorrow at 8pm")
+
+    channel.send.return_value.add_reaction.assert_awaited_once_with("✅")
+    author.send.assert_awaited_once()
+    assert "scheduleremind" in author.send.await_args.args[0]
+    assert "scheduleshare" in author.send.await_args.args[0]
+    stored = await cog.config.guild(guild).scheduled_events()
+    assert stored["100"]["private_controls"] is True
+
+
+async def test_slash_schedule_keeps_organizer_controls_ephemeral(cog, monkeypatch):
+    import schedule.commands as schedule_commands
+
+    monkeypatch.setattr(
+        schedule_commands,
+        "parse_schedule_time",
+        lambda *args, **kwargs: (2000000000, None),
+    )
+    guild = SimpleNamespace(id=5, me=None)
+    await cog.config.guild(guild).target_forum_id.set(20)
+    channel = Mock(spec=discord.Thread)
+    channel.id = 10
+    channel.parent_id = 20
+    channel.name = "Test thread"
+    channel.applied_tags = []
+    channel.send = AsyncMock(
+        return_value=SimpleNamespace(
+            id=100,
+            jump_url="https://discord.com/channels/5/10/100",
+            add_reaction=AsyncMock(),
+            delete=AsyncMock(),
+        )
+    )
+    author = SimpleNamespace(
+        id=1,
+        mention="<@1>",
+        send=AsyncMock(),
+        guild_permissions=SimpleNamespace(manage_guild=False),
+    )
+    author.guild = guild
+    ctx = SimpleNamespace(
+        guild=guild,
+        channel=channel,
+        author=author,
+        bot=cog.bot,
+        interaction=object(),
+        defer=AsyncMock(),
+        send=AsyncMock(),
+    )
+
+    await cog.schedule.callback(cog, ctx, 2, "tomorrow at 8pm")
+
+    channel.send.return_value.add_reaction.assert_awaited_once_with("✅")
+    author.send.assert_not_awaited()
+    response = ctx.send.await_args
+    assert response.kwargs["ephemeral"] is True
+    assert "/scheduleremind" in response.args[0]
+    assert "/scheduleshare" in response.args[0]
+
+
 async def test_legacy_event_without_status_is_authorized_and_can_transition(cog):
     cog._update_event_message = AsyncMock(return_value=True)
     guild = SimpleNamespace(id=5)
@@ -186,7 +353,14 @@ def test_invalid_event_details_are_rejected(capacity, title, description):
 
 
 def test_slash_event_identifiers_use_strings():
-    for name in ("schedulereschedule", "schedulecancel", "schedulefinish"):
+    for name in (
+        "schedulecontrol",
+        "scheduleremind",
+        "scheduleshare",
+        "schedulereschedule",
+        "schedulecancel",
+        "schedulefinish",
+    ):
         command = next(c for c in Schedule.__cog_commands__ if c.name == name)
         parameter = next(p for p in command.app_command.parameters if p.name == "message_id")
         assert parameter.type is discord.AppCommandOptionType.string

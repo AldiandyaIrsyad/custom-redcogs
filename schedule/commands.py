@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import re
+from types import SimpleNamespace
 
 import dateparser
 import discord
@@ -167,6 +168,97 @@ def normalize_message_id(value) -> int | None:
 class ScheduleCommands:
     """Commands for the Schedule cog."""
 
+    def _organizer_controls_text(self, ctx: commands.Context, message) -> str:
+        """Describe private controls for the organizer of a new schedule.
+
+        Reactions are intentionally kept on the public card for attendance only.
+        The action commands below remain hybrid commands so they work for both
+        slash and prefix users, while their callbacks continue to authorize the
+        organizer (or a member with Manage Server) from Config.
+        """
+
+        if ctx.interaction:
+            command_names = (
+                "`/scheduleremind`",
+                "`/scheduleshare`",
+                "`/schedulereschedule`",
+                "`/schedulecancel`",
+                "`/schedulefinish`",
+            )
+        else:
+            prefix = getattr(ctx, "clean_prefix", None) or "[p]"
+            command_names = tuple(
+                f"`{prefix}{name}`"
+                for name in (
+                    "scheduleremind",
+                    "scheduleshare",
+                    "schedulereschedule",
+                    "schedulecancel",
+                    "schedulefinish",
+                )
+            )
+        message_id = getattr(message, "id", "the schedule message")
+        return (
+            "Organizer controls (only you or a member with Manage Server can use them):\n"
+            f"- {command_names[0]} `{message_id}` to remind attendees when the event starts within 30 minutes.\n"
+            f"- {command_names[1]} `{message_id}` to post an announcement.\n"
+            f"- Use {command_names[2]}, {command_names[3]}, or {command_names[4]} with the message ID to manage its lifecycle."
+        )
+
+    async def _send_private_organizer_message(
+        self,
+        ctx: commands.Context,
+        content: str,
+        fallback: str,
+    ) -> bool:
+        """Send organizer details privately for either command invocation."""
+
+        if ctx.interaction:
+            await ctx.send(
+                content,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return True
+
+        author = getattr(ctx, "author", None)
+        send_dm = getattr(author, "send", None)
+        if callable(send_dm):
+            try:
+                await send_dm(
+                    content,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                pass
+            except Exception as exc:
+                logger = getattr(self.bot, "log", None)
+                if logger:
+                    logger.error("Failed to DM schedule organizer controls: %s", exc)
+
+        # Prefix responses are public. Keep the fallback limited to recovery
+        # guidance and do not print the private action details in the channel.
+        try:
+            await ctx.send(
+                fallback,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            pass
+        return False
+
+    async def _send_prefix_organizer_controls(
+        self, ctx: commands.Context, message
+    ) -> bool:
+        """DM prefix-command users, with a non-sensitive fallback if DMs fail."""
+
+        return await self._send_private_organizer_message(
+            ctx,
+            self._organizer_controls_text(ctx, message),
+            "I couldn't DM your private organizer controls. Use the organizer-only schedule commands with the schedule message ID.",
+        )
+
     @asynccontextmanager
     async def _event_mutation_lock(self, guild_id: int):
         """Use the cog's per-guild event lock when the main cog provides it."""
@@ -193,7 +285,10 @@ class ScheduleCommands:
     @staticmethod
     def _has_manage_guild(member: discord.Member) -> bool:
         permissions = getattr(member, "guild_permissions", None)
-        return bool(getattr(permissions, "manage_guild", False))
+        return bool(
+            getattr(permissions, "manage_guild", False)
+            or getattr(permissions, "administrator", False)
+        )
 
     async def _load_authorized_event(
         self, ctx: commands.Context, message_id: int
@@ -475,6 +570,7 @@ class ScheduleCommands:
             "last_shared_timestamp": 0,
             "tags": thread_tags,
             "status": "active",
+            "private_controls": True,
         }
 
         try:
@@ -508,8 +604,6 @@ class ScheduleCommands:
 
         try:
             await msg.add_reaction("✅")
-            await msg.add_reaction("❗")
-            await msg.add_reaction("📢")
         except (discord.Forbidden, discord.HTTPException):
             # The event is already persisted. The confirmation below makes
             # that clear and tells the organizer why reactions may be absent.
@@ -522,13 +616,24 @@ class ScheduleCommands:
             if used_default_timezone
             else f" Parsed in `{timezone_name}`."
         )
-        await ctx.send(
+        confirmation = (
             f"✅ **{game_title}** is scheduled for <t:{unix_timestamp}:F> "
             f"(<t:{unix_timestamp}:R>). [Open the event]({msg.jump_url})."
-            f"{timezone_note}{reaction_note}",
-            ephemeral=True,
-            allowed_mentions=discord.AllowedMentions.none(),
+            f"{timezone_note}{reaction_note}"
         )
+        controls = self._organizer_controls_text(ctx, msg)
+        if ctx.interaction:
+            await ctx.send(
+                f"{confirmation}\n\n{controls}",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            await ctx.send(
+                confirmation,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            await self._send_prefix_organizer_controls(ctx, msg)
 
         # Sharing reads the latest event snapshot and is serialized with
         # reaction updates. The helper intentionally performs its Discord HTTP
@@ -550,6 +655,180 @@ class ScheduleCommands:
                     latest_event,
                     remove_reaction_after_action=False,
                 )
+
+    async def _run_organizer_action(
+        self, ctx: commands.Context, message_id: int, action: str
+    ) -> tuple[dict | None, str | None]:
+        """Run a private organizer action against the current event snapshot.
+
+        Authorization and the action are serialized with reaction updates. This
+        keeps the direct commands safe for new events while still accepting old
+        Config records and old reaction events.
+        """
+
+        if action not in {"remind", "share"}:
+            raise ValueError(f"Unknown organizer action: {action}")
+
+        async with self._event_mutation_lock(ctx.guild.id):
+            async with self.config.guild(ctx.guild).scheduled_events() as events:
+                current = events.get(str(message_id))
+                if not isinstance(current, dict):
+                    return None, "I couldn't find a schedule with that message ID."
+                if not (
+                    self._same_id(current.get("organizer_id"), ctx.author.id)
+                    or self._has_manage_guild(ctx.author)
+                ):
+                    return (
+                        None,
+                        "Only the event organizer or a member with Manage Server can do that.",
+                    )
+                if self._event_status(current) != "active":
+                    return (
+                        None,
+                        f"This schedule is already {self._event_status(current)}.",
+                    )
+                event_data = self._event_copy(current)
+
+            message = await self._fetch_event_message(
+                ctx.guild, message_id, event_data
+            )
+            if message is None:
+                return None, "I couldn't find the schedule message in Discord."
+
+            if action == "remind":
+                now = int(datetime.now(timezone.utc).timestamp())
+                until_start = self._as_int(event_data.get("start_timestamp"), 0) - now
+                if not 0 <= until_start <= self.REMINDER_WINDOW_SECONDS:
+                    return None, "Reminders are available only during the 30 minutes before the event starts."
+                last_reminder = self._as_int(
+                    event_data.get(
+                        "last_reminder_timestamp",
+                        event_data.get("last_reminded_timestamp", 0),
+                    ),
+                    0,
+                )
+                if last_reminder and now - last_reminder < self.REMINDER_COOLDOWN_SECONDS:
+                    remaining = max(1, (self.REMINDER_COOLDOWN_SECONDS - (now - last_reminder) + 59) // 60)
+                    return None, f"A reminder was sent recently. Try again in about {remaining} minute(s)."
+                await self._handle_reminder(
+                    ctx.guild,
+                    message,
+                    event_data,
+                    str(message_id),
+                    ctx.author,
+                    "❗",
+                )
+            else:
+                if not await self.config.guild(ctx.guild).share_channel_id():
+                    return None, "An administrator must configure the announcement channel first."
+                last_shared = self._as_int(event_data.get("last_shared_timestamp"), 0)
+                now = int(datetime.now(timezone.utc).timestamp())
+                if last_shared and now - last_shared < 3600:
+                    remaining = max(1, (3600 - (now - last_shared) + 59) // 60)
+                    return None, f"This schedule was shared recently. Try again in about {remaining} minute(s)."
+                await self._share_schedule(
+                    ctx.guild,
+                    ctx.author,
+                    message,
+                    event_data,
+                    # This is a manual action. Enforce the per-event cooldown;
+                    # removing a legacy reaction is harmless when none exists.
+                    remove_reaction_after_action=True,
+                )
+            return event_data, None
+
+    @commands.hybrid_command(name="schedulecontrol", aliases=["controls"])
+    @commands.guild_only()
+    @app_commands.describe(
+        message_id="The schedule message ID or its Discord message URL."
+    )
+    async def controls(self, ctx: commands.Context, message_id: str):
+        """Reopen the private organizer controls for an existing schedule."""
+
+        message_id = normalize_message_id(message_id)
+        if message_id is None:
+            return await self._send_private_organizer_message(
+                ctx,
+                "❌ Please provide a valid Discord message ID or message URL.",
+                "I couldn't process the organizer control request. Please use a valid schedule message ID.",
+            )
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+        event_data, error = await self._load_authorized_event(ctx, message_id)
+        if error:
+            return await self._send_private_organizer_message(
+                ctx,
+                f"❌ {error}",
+                "I couldn't verify your organizer controls. Check the schedule message ID and your permissions.",
+            )
+        control_text = self._organizer_controls_text(
+            ctx, SimpleNamespace(id=message_id)
+        )
+        return await self._send_private_organizer_message(
+            ctx,
+            control_text,
+            "I couldn't DM your private organizer controls. Use the organizer-only schedule commands with the schedule message ID.",
+        )
+
+    @commands.hybrid_command(name="scheduleremind", aliases=["remind"])
+    @commands.guild_only()
+    @app_commands.describe(
+        message_id="The schedule message ID or its Discord message URL."
+    )
+    async def remind(self, ctx: commands.Context, message_id: str):
+        """Privately notify attendees of an active schedule near its start."""
+
+        message_id = normalize_message_id(message_id)
+        if message_id is None:
+            return await self._send_private_organizer_message(
+                ctx,
+                "❌ Please provide a valid Discord message ID or message URL.",
+                "I couldn't process the reminder request. Please use a valid schedule message ID.",
+            )
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+        _, error = await self._run_organizer_action(ctx, message_id, "remind")
+        if error:
+            return await self._send_private_organizer_message(
+                ctx,
+                f"❌ {error}",
+                "I couldn't process the reminder request. Check the schedule ID and your permissions.",
+            )
+        await self._send_private_organizer_message(
+            ctx,
+            "✅ The reminder action was processed. Check your DM for delivery details.",
+            "The reminder action was processed. Check your DMs for delivery details.",
+        )
+
+    @commands.hybrid_command(name="scheduleshare", aliases=["share"])
+    @commands.guild_only()
+    @app_commands.describe(
+        message_id="The schedule message ID or its Discord message URL."
+    )
+    async def share(self, ctx: commands.Context, message_id: str):
+        """Post an announcement for an active schedule."""
+
+        message_id = normalize_message_id(message_id)
+        if message_id is None:
+            return await self._send_private_organizer_message(
+                ctx,
+                "❌ Please provide a valid Discord message ID or message URL.",
+                "I couldn't process the announcement request. Please use a valid schedule message ID.",
+            )
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+        _, error = await self._run_organizer_action(ctx, message_id, "share")
+        if error:
+            return await self._send_private_organizer_message(
+                ctx,
+                f"❌ {error}",
+                "I couldn't process the announcement request. Check the schedule ID and your permissions.",
+            )
+        await self._send_private_organizer_message(
+            ctx,
+            "✅ The schedule announcement action was processed.",
+            "The schedule announcement action was processed.",
+        )
 
     # ``cancel`` is reserved by Red's command framework. Keep explicit
     # schedule-prefixed names for slash/prefix registration and add the short
@@ -628,11 +907,11 @@ class ScheduleCommands:
                     )
                 else:
                     updated = self._event_copy(current)
-                updated["start_timestamp"] = unix_timestamp
-                updated["timezone"] = timezone_name
-                updated["timezone_defaulted"] = used_default_timezone
-                updated["last_reminder_timestamp"] = 0
-                events[str(message_id)] = updated
+                    updated["start_timestamp"] = unix_timestamp
+                    updated["timezone"] = timezone_name
+                    updated["timezone_defaulted"] = used_default_timezone
+                    updated["last_reminder_timestamp"] = 0
+                    events[str(message_id)] = updated
             if updated is not None:
                 message_updated = await self._update_event_message(
                     ctx.guild, message_id, updated
