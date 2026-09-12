@@ -83,7 +83,7 @@ After `[p]schedule` succeeds, the cog creates two surfaces:
 
 `[p]scheduleshare` posts the current event snapshot to the configured share channel and has a one-hour per-event cooldown. The announcement links back to the original thread, so use that link for the current participant list and status. The cog also posts an automatic announcement when the share channel is configured.
 
-The lobby includes the organizer. When it is full, a new `✅` reaction is removed and the member is told that no slot is available. New joins are also rejected after the start time. Cancelled and finished events remain visible but no longer accept joins, reminders, or shares. Deleting the schedule message removes its matching stored event.
+The lobby includes the organizer. When it is full, a new `✅` reaction is removed and the member is told that no slot is available. New joins are also rejected after the start time. Cancelled and finished events remain visible but no longer accept joins, reminders, or shares. Deleting the schedule message or its forum post removes its matching stored event.
 
 ## Timezones and time input
 
@@ -128,7 +128,7 @@ The cog stores its state with Red Config. Per-member data is the saved timezone.
 - the timezone used to parse the event and whether the default was used;
 - active, cancelled, or finished status; and reminder/share timestamps used for cooldowns.
 
-The cog does not send schedule data to a separate service. It sends event content to Discord when it creates the schedule embed, posts an announcement, or sends a reminder DM. Discord retains those messages under its own policies. Stored event data remains in Red Config while the record exists, including after cancellation or completion. Deleting the schedule message lets the cog remove its matching event record. There is no separate export or per-member deletion command; server owners control the Red data directory and can unload the cog or manage its Config data according to their server's retention policy.
+The cog does not send schedule data to a separate service. It sends event content to Discord when it creates the schedule embed, posts an announcement, or sends a reminder DM. Discord retains those messages under its own policies. Stored event data remains in Red Config while the record exists, including after cancellation or completion. Deleting the schedule message or its forum post lets the cog remove its matching event record. There is no separate export or per-member deletion command; server owners control the Red data directory and can unload the cog or manage its Config data according to their server's retention policy.
 
 ## Development and tests
 

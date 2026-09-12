@@ -19,7 +19,7 @@ class Schedule(
     - Set a target channel for sharing scheduled events.
     - Allow users to set their personal timezone.
     - Schedule new game events with details like player count, time, title, and description.
-    - Handle reactions on event messages for joining/leaving, reminding, and sharing.
+    - Handle attendance reactions and private organizer actions.
     """
 
     def __init__(self, bot: Red):

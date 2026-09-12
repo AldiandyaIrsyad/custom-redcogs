@@ -60,6 +60,19 @@ class ScheduleListeners:
                 for message_id in payload.message_ids:
                     events.pop(str(message_id), None)
 
+    @commands.Cog.listener()
+    async def on_raw_thread_delete(self, payload: discord.RawThreadDeleteEvent):
+        """Prune schedules when a whole forum post is deleted."""
+
+        guild = self.bot.get_guild(payload.guild_id)
+        if guild is None:
+            return
+        async with self._event_lock(payload.guild_id):
+            async with self.config.guild(guild).scheduled_events() as events:
+                for message_id, event_data in list(events.items()):
+                    if isinstance(event_data, dict) and str(event_data.get("channel_id")) == str(payload.thread_id):
+                        events.pop(message_id, None)
+
     async def _handle_reaction(
         self, payload: discord.RawReactionActionEvent, action: str
     ):

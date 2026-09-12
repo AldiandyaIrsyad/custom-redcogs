@@ -210,6 +210,18 @@ async def test_raw_bulk_message_delete_prunes_selected_events(cog):
     assert set((await cog.config.guild(guild).scheduled_events())) == {"200"}
 
 
+async def test_raw_thread_delete_prunes_only_events_in_deleted_post(cog):
+    guild = SimpleNamespace(id=5)
+    await cog.config.guild(guild).scheduled_events.set(
+        {"100": event(channel_id=10), "200": event(channel_id=20)}
+    )
+    cog.bot.get_guild = lambda guild_id: guild
+
+    await cog.on_raw_thread_delete(SimpleNamespace(guild_id=5, thread_id=10))
+
+    assert set(await cog.config.guild(guild).scheduled_events()) == {"200"}
+
+
 async def test_reaction_for_deleted_message_prunes_legacy_storage(cog):
     guild, channel, _, _, _ = await prepare(cog, event())
     channel.fetch_message.side_effect = discord.NotFound(Mock(), "gone")
